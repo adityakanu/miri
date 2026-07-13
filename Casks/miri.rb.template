@@ -2,10 +2,10 @@ cask "miri" do
   version "@VERSION@"
   sha256 "@SHA256@"
 
-  url "https://github.com/miri-ai/miri/releases/download/v#{version}/Miri-#{version}.dmg"
+  url "https://github.com/adityakanu/miri/releases/download/v#{version}/Miri-#{version}.dmg"
   name "Miri"
   desc "Local-first voice interface for coding agents"
-  homepage "https://github.com/miri-ai/miri"
+  homepage "https://github.com/adityakanu/miri"
 
   depends_on arch: :arm64
   depends_on macos: ">= :sonoma"

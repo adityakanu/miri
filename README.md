@@ -1,126 +1,110 @@
 # Miri
 
-**A local-first voice bridge for coding agents on macOS.**
+<p align="center">
+  <strong>Speak to your coding agents. Keep control of the destination.</strong>
+</p>
 
-Miri lets you hold a global shortcut, speak a prompt, and send the resulting
-local transcript to an explicitly selected agent session. Agents can also send
-short, filtered spoken status updates back through Miri.
+<p align="center">
+  <a href="https://github.com/adityakanu/miri/actions/workflows/ci.yml"><img src="https://github.com/adityakanu/miri/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/adityakanu/miri/releases"><img src="https://img.shields.io/github/v/release/adityakanu/miri?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/adityakanu/miri" alt="Apache-2.0 license"></a>
+  <a href="https://github.com/adityakanu/miri/stargazers"><img src="https://img.shields.io/github/stars/adityakanu/miri?style=flat" alt="GitHub stars"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-black?logo=apple" alt="macOS 14 or later">
+  <img src="https://img.shields.io/badge/Apple%20Silicon-only-000000" alt="Apple Silicon only">
+</p>
 
-Miri is built for people who work with multiple coding agents and want voice
-input without losing control of where a message goes.
+<p align="center">
+  <img src="assets/miri-demo.gif" alt="Miri voice capture, target routing, and status-pill demo" width="760">
+</p>
 
-> [!WARNING]
-> Miri is pre-release software. The development build is usable, but a
-> notarized public DMG, pinned model manifest, hardware benchmark evidence, and
-> full adapter compatibility matrix are still in progress. Read the
-> [current limitations](#current-status) before depending on it for daily work.
+Miri is a local-first macOS voice bridge for coding agents. Hold a shortcut,
+speak a prompt, and Miri routes the local transcript to the exact agent session
+you selected. Agents can send short spoken progress, blocker, approval, and
+completion updates back through Miri.
 
-## What it does
+> [!CAUTION]
+> Miri is early-access software. Preview downloads are unsigned and require a
+> one-time macOS **Open Anyway** action. Use them only when downloaded from
+> this repository’s GitHub Releases and verify the published checksum.
 
-- Push-to-talk with a configurable global shortcut.
-- A compact, non-activating notch-adjacent status pill that does not steal
-  focus from your editor or terminal.
-- Local speech-to-text and text-to-speech through replaceable providers.
-- Explicit target routing: active target, default target, or per-target
-  hotkeys. A recording snapshots its destination before you speak.
-- Codex thread selection, Claude Code CLI support, Hermes session support,
-  generic-command delivery, and a safe Clipboard fallback.
-- Agent status speech through `miri status` or the `miri-mcp` MCP server.
-- Memory-only failed-delivery outbox with retry, edit, copy, and discard.
-- Optional experimental wake-word mode with a visible listening indicator.
-- Local configuration, logs, models, and no local HTTP server.
+## Get Miri
 
-## Quick start: development build
+### Preview DMG — easiest install
 
-### Requirements
+Once a preview release is published, download `Miri-<version>-preview.dmg` from
+[GitHub Releases](https://github.com/adityakanu/miri/releases), then:
 
-- Apple Silicon Mac
-- macOS 14 Sonoma or later
-- Xcode with Swift 6
-- [Homebrew](https://brew.sh/)
+1. Open the DMG and drag **Miri.app** to Applications.
+2. Open Miri once. macOS will block the unsigned preview.
+3. Open **System Settings → Privacy & Security** and choose **Open Anyway**.
+4. Launch Miri again, grant microphone access, and choose your shortcut.
 
-Clone the repository from GitHub, then bootstrap the development environment:
+The DMG drag-and-drop experience works without a paid Apple developer account;
+the Gatekeeper confirmation is the trade-off. A checksum file accompanies every
+release:
 
 ```sh
-git clone <your-github-repository-url> miri
+shasum -a 256 -c Miri-<version>-preview.sha256
+```
+
+### Build from source
+
+For contributors and developers:
+
+```sh
+git clone https://github.com/adityakanu/miri.git
 cd miri
 make bootstrap
 make models-dev
-make test
 swift run Miri
 ```
 
-Miri appears in the menu bar, not the Dock. On first launch, grant microphone
-access and choose a shortcut. The default is `Option + Space`.
+Requires Apple Silicon, macOS 14+, Xcode, Homebrew, and `uv`.
 
-`make models-dev` installs the optional local inference runtimes. Model weights
-must still be supplied through your configuration until the first
-checksum-pinned release manifest is published; see [Speech models](#speech-models).
+## How it works
 
-## Using Miri
+| Speak | Route | Hear |
+| --- | --- | --- |
+| Hold your global shortcut and speak. | Miri snapshots the active, default, or dedicated-hotkey target. | Get concise, filtered spoken agent updates. |
+| Release to transcribe locally. | Never guesses from the frontmost terminal. | Interrupt speech by starting a new recording. |
 
-1. Launch Miri with `swift run Miri`.
-2. Open its menu-bar item and select a target.
-3. Hold the configured shortcut, speak, then release it.
-4. Miri transcribes locally and sends the finished transcript to the target
-   snapshotted at recording start.
-5. Watch the status pill for transcription, sending, delivery, queueing, or
-   error feedback.
+- **Local speech:** Moonshine Streaming, Pocket TTS, Silero VAD, and optional
+  experimental openWakeWord run behind replaceable provider interfaces.
+- **Explicit agents:** Codex, Claude Code, Hermes, generic local commands, and
+  a safe Clipboard fallback.
+- **No focus stealing:** a compact notch-adjacent status pill stays out of your
+  editor and terminal.
+- **Recoverable delivery:** one-item target queues plus a memory-only outbox
+  for retry, edit, copy, or discard.
 
-Press `Escape` while recording to cancel. Pressing the listening shortcut while
-Miri is speaking stops speech and starts recording, keeping interaction
-half-duplex.
+## First use
 
-### First target
+1. Launch Miri from the menu bar.
+2. Grant microphone permission when asked.
+3. Select **Clipboard** for a safe first test, or add an exact Codex thread in
+   **Settings → Targets**.
+4. Hold `Option + Space`, speak, and release.
+5. Watch the pill: listening → transcribing → sending → delivered.
 
-A new configuration starts with a **Clipboard** target. It copies the transcript
-to the macOS pasteboard and reports `Copied`; it never simulates keystrokes or
-pastes into another app.
+Press `Escape` to cancel. Miri is half-duplex: starting a new recording stops
+speech playback so it does not transcribe itself.
 
-For Codex, open **Settings → Targets**, refresh recent threads, and add the
-exact conversation you want to control. Miri stores the thread ID as a named
-target; it never guesses from the frontmost window.
+### Tell Miri to speak
 
-You can verify the configured Codex transport from a terminal:
-
-```sh
-swift run miri agents test-codex
-```
-
-More adapter details are in [docs/adapters.md](docs/adapters.md).
-
-### Spoken agent status
-
-With Miri running, an agent or shell script can request a short spoken update:
+Agents can request short status speech through the private local socket:
 
 ```sh
-swift run miri status "Tests passed; checking the release bundle now." --priority question
+miri status "Tests passed; checking the package now." --priority question
 ```
 
-`miri-mcp` exposes the same capability to MCP-compatible agents through the
-`voice_status` tool. Statuses are capped, deduplicated, rate-limited, and
-filtered for obvious secrets, code, logs, URLs, and private paths.
+Or use `miri-mcp` and its `voice_status` MCP tool. Miri applies length limits,
+deduplication, rate limits, priority handling, and filters for obvious secrets,
+logs, code, URLs, and private paths.
 
-```sh
-swift run miri-mcp
-```
+## Configure targets and speech
 
-Use voice for concise progress, blockers, approvals, questions, warnings, and
-completion notices—not full responses or source code.
-
-## Configuration
-
-Miri reads and writes TOML at:
-
-```text
-~/.config/miri/config.toml
-```
-
-Copy [config.example.toml](config.example.toml) as a starting point. Miri
-validates the complete file, reports line-specific errors, and live-reloads
-valid external edits.
-
-Minimal example:
+Configuration lives at `~/.config/miri/config.toml` and live-reloads after
+valid edits. Start with [config.example.toml](config.example.toml).
 
 ```toml
 version = 1
@@ -136,168 +120,66 @@ name = "Clipboard"
 adapter = "clipboard"
 ```
 
-Useful target types:
+| Target | What Miri needs |
+| --- | --- |
+| Clipboard | Nothing else — copies the transcript safely. |
+| Codex | Working directory and exact thread ID. |
+| Claude Code | Working directory and optional session ID. |
+| Hermes | Local API-server URL and exact session ID. |
+| Generic command | Local executable path; transcript goes to stdin. |
 
-| Adapter | Use case | Required target fields |
-| --- | --- | --- |
-| `clipboard` | Safe fallback; copies text | `id`, `name` |
-| `codex` | One exact Codex thread | `working_directory`, `session` |
-| `claude-code` | Claude Code CLI session | `working_directory`, optional `session` |
-| `hermes` | Hermes local API-server session | `endpoint`, `session` |
-| `generic-command` | Launch a local executable; transcript goes to stdin | `endpoint` executable path |
+The initial production model direction is Moonshine Small Streaming for speech
+recognition and Pocket TTS for speech. Preview users may need to configure local
+model paths while the pinned download manifest is being finalized.
 
-Dedicated target shortcuts use the target's `hotkey` field. If a target is busy,
-Miri keeps at most one queued voice message and follows that target's
-`queue_replacement` policy (`reject`, `replace`, or `confirm`).
+## Privacy
 
-## Speech models
+Miri is local-first:
 
-Miri's default production direction is:
+- No analytics and no local HTTP server.
+- Audio stays on your Mac.
+- No persistent transcript history.
+- Failed deliveries stay only in memory and disappear when Miri quits.
+- Logs omit raw audio and full transcripts by default.
 
-- **STT:** Moonshine Small Streaming
-- **TTS:** Pocket TTS
-- **Endpointing:** Silero VAD
-- **Wake word:** openWakeWord, experimental and off by default
+Read [privacy details](docs/privacy.md) before connecting third-party local
+agent processes. Clipboard and generic-command targets disclose the transcript
+to the process you explicitly choose.
 
-The Swift app owns capture, playback, routing, permissions, and UI. A separate
-Python worker owns inference behind a versioned framed IPC contract, so speech
-providers can be replaced without rewriting the product.
+## Project status
 
-For local development, configure model paths in `config.toml`, then restart
-Miri. The full example includes Moonshine, Pocket TTS, VAD, and wake-word
-settings. Model downloads in a stable release will require explicit consent and
-will use pinned URLs, byte sizes, checksums, resumable downloads, and reviewed
-licenses.
+| Area | Status |
+| --- | --- |
+| Menu-bar app, hotkeys, overlay, routing, outbox | Implemented |
+| Local worker, streamed STT/TTS contract, VAD/wake-word paths | Implemented |
+| Codex thread targeting and agent speech | Implemented |
+| Claude Code and Hermes live compatibility matrix | In validation |
+| Signed/notarized DMG and official Homebrew Cask | Planned |
+| Pinned production model manifest and M1/M4 evidence | In progress |
 
-See [Worker/README.md](Worker/README.md) and
-[docs/model-licenses.md](docs/model-licenses.md) for provider and licensing
-notes.
+The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 
-## Privacy and data
+## Documentation
 
-Miri is local-first by design.
-
-- Audio stays on the Mac.
-- Miri has no analytics and opens no HTTP port.
-- Transcript history is not persisted.
-- Failed deliveries live only in an in-memory outbox and disappear on quit.
-- Logs exclude raw audio and full transcripts by default.
-- The control socket is private to the current user under `$TMPDIR/miri`.
-
-Configuration is stored in `~/.config/miri`; models and app data are under
-`~/Library/Application Support/Miri`; logs are under `~/Library/Logs/Miri`.
-Settings includes actions to delete downloaded models or reset all local Miri
-data.
-
-Clipboard and generic-command targets deliberately disclose the transcript to
-the selected local application or process. Review the privacy posture of any
-target you configure.
-
-Read the full [privacy and security notes](docs/privacy.md).
-
-## Installation from GitHub Releases
-
-No stable DMG has been published yet. When releases are available, GitHub
-Releases will be the canonical install location:
-
-1. Download `Miri-<version>.dmg` and its matching `.sha256` file from the same
-   GitHub Release.
-2. Verify the checksum:
-
-   ```sh
-   shasum -a 256 -c Miri-<version>.sha256
-   ```
-
-3. Open the DMG and move `Miri.app` to Applications.
-4. Launch Miri and complete first-run setup.
-
-The release DMG will be signed and notarized. It will bundle its own Python
-worker; end users will not need Python, `uv`, Xcode, or Homebrew.
-
-A Homebrew Cask will install the exact same DMG and checksum after the first
-notarized release is published.
-
-## Development
-
-Common commands:
-
-```sh
-make bootstrap       # install XcodeGen/uv if needed and sync Python tooling
-make models-dev      # install optional local inference runtimes
-make test            # Swift and Python tests
-make generate        # regenerate the Xcode project with XcodeGen
-swift run Miri       # run the menu-bar app
-swift run miri status "Miri is ready"
-```
-
-Run test suites independently:
-
-```sh
-swift test
-uv run --project Worker --no-sync pytest
-```
-
-The performance harness writes only timing metadata to
-`~/Library/Logs/Miri/performance.jsonl`. See
-[docs/benchmarks.md](docs/benchmarks.md) for the M1/M4 benchmark protocol.
-
-## Architecture
-
-```text
-Swift macOS app
-  ├─ menu bar, settings, hotkeys, notch overlay
-  ├─ microphone capture and speaker playback
-  ├─ target router and agent adapters
-  └─ private control socket
-             │ versioned local IPC
-             ▼
-Python speech worker
-  ├─ STT / TTS / VAD / wake-word providers
-  ├─ model lifecycle and health
-  └─ streamed transcript and PCM events
-```
-
-Read [docs/architecture.md](docs/architecture.md) and
-[docs/ipc.md](docs/ipc.md) for the contracts.
-
-## Current status
-
-Implemented and tested in the repository:
-
-- Native menu-bar interaction, status overlay, push-to-talk, cancellation, and
-  half-duplex playback.
-- TOML validation, live reload, target snapshotting, queues, and in-memory
-  outbox handling.
-- Codex, Claude Code, Hermes, generic command, and Clipboard adapter paths.
-- Local control socket, CLI, and MCP status speech interface.
-- Python provider contracts, worker recovery, model-management protocol, and
-  wake-word/VAD protocol paths.
-
-Before a stable public release, the project still needs:
-
-- A checked-in, reviewed, checksum-pinned production model manifest.
-- Real-device benchmark evidence on M4 and M1 hardware.
-- Live compatibility validation for Claude Code and Hermes installations.
-- Clean-machine DMG, signing, notarization, and Homebrew Cask validation.
-
-The [release checklist](docs/release-checklist.md) is the source of truth for
-release gates.
+- [Install and remove Miri](docs/installation.md)
+- [Adapter setup](docs/adapters.md)
+- [Architecture](docs/architecture.md)
+- [IPC contract](docs/ipc.md)
+- [Model and runtime licenses](docs/model-licenses.md)
+- [Benchmark protocol](docs/benchmarks.md)
 
 ## Contributing
 
-Contributions are welcome. Before opening a pull request:
+Issues and pull requests are welcome. Keep changes local-first, preserve the
+agent-neutral contracts, add tests, and run:
 
-1. Keep changes local-first and avoid adding telemetry or network services.
-2. Preserve the agent-neutral contracts in `MiriCore`.
-3. Add or update Swift and Python tests for behavioral changes.
-4. Run `make test`.
-5. Update documentation when setup, configuration, protocol, privacy, or
-   release behavior changes.
+```sh
+make test
+```
 
-Please use GitHub Issues for reproducible bugs and feature proposals. Do not
-include secrets, private transcripts, raw audio, or personal data in issues or
-logs.
+Please never include secrets, raw audio, or private transcripts in GitHub
+issues, pull requests, or logs.
 
 ## License
 
-Miri is licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).

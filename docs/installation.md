@@ -17,7 +17,24 @@ The development process uses `Worker/.venv`. A release DMG instead contains a
 checksum-pinned standalone Python runtime and does not require Python or `uv` on
 the user's machine.
 
-## Release DMG
+## Unsigned preview DMG
+
+Preview releases are published on GitHub without an Apple Developer ID signature
+or notarization. The DMG still mounts normally and supports drag-and-drop to
+Applications. After downloading from the official GitHub Release, verify its
+checksum, move `Miri.app` to Applications, try opening it once, then choose
+**System Settings > Privacy & Security > Open Anyway** when macOS blocks the
+first launch.
+
+```sh
+shasum -a 256 -c Miri-<version>-preview.sha256
+```
+
+Unsigned previews are intended for testers who understand this trade-off. Do
+not disable Gatekeeper globally, and only override it for an artifact whose
+GitHub Release and checksum you have verified.
+
+## Notarized release DMG
 
 No stable DMG has been published from this repository yet. When one is
 published, verify it against the `.sha256` file attached to the same GitHub
