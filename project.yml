@@ -1,0 +1,23 @@
+name: Miri
+options:
+  bundleIdPrefix: dev.miri
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  Miri:
+    path: .
+targets:
+  Miri:
+    type: application
+    platform: macOS
+    sources: [Sources/MiriApp]
+    dependencies:
+      - package: Miri
+        product: MiriCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.miri.app
+        PRODUCT_NAME: Miri
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/Miri.entitlements
+        GENERATE_INFOPLIST_FILE: NO

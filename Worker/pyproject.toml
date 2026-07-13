@@ -1,0 +1,29 @@
+[project]
+name = "miri-worker"
+version = "0.1.0"
+description = "Replaceable speech inference worker for Miri"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+moonshine = ["moonshine-voice>=0.0.68,<0.1"]
+pocket-tts = ["pocket-tts>=2.1,<2.2"]
+silero-vad = ["silero-vad>=6.2,<7"]
+openwakeword = ["openwakeword>=0.6,<0.7"]
+inference = [
+  "moonshine-voice>=0.0.68,<0.1",
+  "pocket-tts>=2.1,<2.2",
+  "silero-vad>=6.2,<7",
+  "openwakeword>=0.6,<0.7",
+]
+
+[project.scripts]
+miri-worker = "miri_worker.service:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

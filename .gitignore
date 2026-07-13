@@ -1,0 +1,13 @@
+.build/
+.swiftpm/
+DerivedData/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+dist/
+.release/
+build/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/

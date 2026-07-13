@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+
+CONTENTS=$(cd "$(dirname "$0")/.." && pwd)
+export PYTHONPATH="$CONTENTS/Resources/worker"
+PYTHON="$CONTENTS/Resources/python/bin/python3"
+if [[ ! -x "$PYTHON" ]]; then PYTHON="$CONTENTS/Resources/python/install/bin/python3"; fi
+exec "$PYTHON" -s -m miri_worker.service "$@"

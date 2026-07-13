@@ -1,0 +1,23 @@
+cask "miri" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/miri-ai/miri/releases/download/v#{version}/Miri-#{version}.dmg"
+  name "Miri"
+  desc "Local-first voice interface for coding agents"
+  homepage "https://github.com/miri-ai/miri"
+
+  depends_on arch: :arm64
+  depends_on macos: ">= :sonoma"
+
+  app "Miri.app"
+  binary "Miri.app/Contents/Helpers/miri"
+  binary "Miri.app/Contents/Helpers/miri-mcp"
+
+  zap trash: [
+    "~/Library/Application Support/Miri",
+    "~/Library/Caches/Miri",
+    "~/Library/Logs/Miri",
+    "~/.config/miri",
+  ]
+end

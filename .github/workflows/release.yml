@@ -1,0 +1,121 @@
+name: Release candidate
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without the v prefix
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-15
+    environment: release
+    env:
+      APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+      APPLE_NOTARY_PROFILE: miri-ci-notary
+      PYTHON_STANDALONE_URL: ${{ vars.PYTHON_STANDALONE_URL }}
+      MIRI_PYTHON_STANDALONE_SHA256: ${{ vars.PYTHON_STANDALONE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "v$version" ]]; then exit 2; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v5
+      - name: Install release tools
+        run: brew install xcodegen syft
+
+      - name: Require pinned runtime and signing credentials
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in PYTHON_STANDALONE_URL MIRI_PYTHON_STANDALONE_SHA256 APPLE_SIGN_IDENTITY CERTIFICATE_P12_BASE64 CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_ID APPLE_APP_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name:-}" ]] || { echo "missing release setting: $name" >&2; exit 2; }
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/miri.keychain-db"
+          printf '%s' "$CERTIFICATE_P12_BASE64" | base64 -D > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security list-keychain -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
+
+      - name: Configure notarization profile
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID"
+
+      - name: Download checksum-pinned standalone Python
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 "$PYTHON_STANDALONE_URL" -o "$RUNNER_TEMP/python.tar.gz"
+          actual=$(shasum -a 256 "$RUNNER_TEMP/python.tar.gz" | awk '{print $1}')
+          [[ "$actual" == "$MIRI_PYTHON_STANDALONE_SHA256" ]]
+
+      - name: Test
+        run: make test
+
+      - name: Build, sign, notarize, and describe artifact
+        env:
+          MIRI_PYTHON_STANDALONE_ARCHIVE: ${{ runner.temp }}/python.tar.gz
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+          scripts/build-release.sh "$version"
+          scripts/sign-and-notarize.sh
+          scripts/create-dmg.sh "$version"
+          scripts/notarize.sh "dist/Miri-$version.dmg"
+          scripts/release-metadata.sh "$version"
+          (cd dist && shasum -a 256 -c "Miri-$version.sha256")
+          ruby -c dist/miri.rb
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version='${{ steps.version.outputs.version }}'
+          tag="v$version"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
+          gh release create "$tag" \
+            "dist/Miri-$version.dmg" \
+            "dist/Miri-$version.sha256" \
+            "dist/Miri-$version.spdx.json" \
+            "dist/miri.rb" \
+            --verify-tag --generate-notes --title "Miri $version"

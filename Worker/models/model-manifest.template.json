@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "status": "template-not-installable",
+  "notes": "Release engineering must add exact artifact URLs, byte sizes, and verified SHA-256 values before enabling managed downloads. No placeholder checksums are accepted.",
+  "providers": [
+    {
+      "id": "moonshine-small-streaming-en",
+      "provider": "moonshine-voice",
+      "source": "https://github.com/moonshine-ai/moonshine",
+      "modelSource": "https://huggingface.co/UsefulSensors",
+      "license": "MIT (runtime); verify the selected model card before distribution",
+      "pinnedVersion": "0.0.68",
+      "artifacts": []
+    },
+    {
+      "id": "pocket-tts-english",
+      "provider": "pocket-tts",
+      "source": "https://github.com/kyutai-labs/pocket-tts",
+      "modelSource": "https://huggingface.co/kyutai/pocket-tts",
+      "license": "MIT (code and model); individual voice licenses vary",
+      "pinnedVersion": "2.1.0",
+      "artifacts": []
+    },
+    {
+      "id": "silero-vad",
+      "provider": "silero-vad",
+      "source": "https://github.com/snakers4/silero-vad",
+      "license": "MIT",
+      "pinnedVersion": "6.2.1",
+      "artifacts": []
+    },
+    {
+      "id": "openwakeword-experimental",
+      "provider": "openwakeword",
+      "source": "https://github.com/dscripka/openWakeWord",
+      "license": "Apache-2.0 (code); each wake-word model carries its own license",
+      "pinnedVersion": "0.6.0",
+      "artifacts": []
+    }
+  ]
+}

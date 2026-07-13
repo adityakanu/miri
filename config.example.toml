@@ -1,0 +1,59 @@
+version = 1
+default_target = "clipboard"
+input_mode = "push_to_talk"
+
+[audio]
+profile = "responsive"
+
+[hotkeys]
+active_target = "option+space"
+
+[stt]
+provider = "moonshine"
+model_path = "~/Library/Application Support/Miri/Models/moonshine"
+model_arch = 4 # Moonshine Small Streaming
+
+[vad]
+provider = "silero"
+threshold = 0.5
+minimum_silence_ms = 500
+
+[tts]
+provider = "pocket-tts"
+voice = "alba"
+speak_agent_responses = true
+agent_response_max_characters = 180
+
+[wakeword]
+enabled = false
+provider = "openwakeword"
+model_path = "~/Library/Application Support/Miri/Models/wakeword.onnx"
+threshold = 0.55
+utterance_timeout_seconds = 20
+
+# Stable release builds provide this manifest inside Miri.app. Development can
+# point to a locally reviewed manifest containing exact URLs, sizes, and SHA-256.
+# [models]
+# manifest_path = "/path/to/model-manifest.json"
+# directory = "~/Library/Application Support/Miri/Models"
+
+[[targets]]
+id = "clipboard"
+name = "Clipboard"
+adapter = "clipboard"
+
+# Add Codex conversations from Settings > Targets. Miri stores exact thread ID:
+# [[targets]]
+# id = "codex-project"
+# name = "Codex – Project"
+# adapter = "codex"
+# working_directory = "/path/to/project"
+# session = "thread-uuid"
+
+# [[targets]]
+# id = "hermes-project"
+# name = "Hermes – Project"
+# adapter = "hermes"
+# endpoint = "http://127.0.0.1:8642"
+# session = "hermes-session-id"
+# Set HERMES_API_SERVER_KEY in Miri's launch environment when authentication is enabled.
