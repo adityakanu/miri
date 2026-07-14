@@ -10,13 +10,14 @@ VERSION=${1:-}
 PYTHON=${2:-}
 DIST="$ROOT/dist"
 STAGE="$ROOT/.preview"
+DMG_ROOT="$STAGE/dmg-root"
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
   echo "usage: $0 <version> <standalone-python>" >&2
   exit 2
 }
 [[ -x "$PYTHON" ]] || { echo "python is not executable: $PYTHON" >&2; exit 2; }
-for tool in xcodegen xcodebuild swift uv ditto hdiutil shasum; do
+for tool in xcodegen xcodebuild swift uv ditto hdiutil shasum codesign; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 2; }
 done
 
@@ -53,10 +54,17 @@ cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+# Xcode may leave an ad-hoc signature on the wrapper. Adding helpers and the
+# Python runtime invalidates it, and an invalid signature makes Gatekeeper call
+# an otherwise unsigned preview “damaged”. The preview is deliberately unsigned.
+codesign --remove-signature "$APP" 2>/dev/null || true
 DMG="$DIST/Miri-$VERSION-preview.dmg"
 ZIP="$DIST/Miri-$VERSION-preview.zip"
 rm -f "$DMG" "$ZIP"
-/usr/bin/hdiutil create -volname "Miri Preview" -srcfolder "$APP" -ov -format UDZO "$DMG"
+mkdir -p "$DMG_ROOT"
+ditto "$APP" "$DMG_ROOT/Miri.app"
+ln -s /Applications "$DMG_ROOT/Applications"
+/usr/bin/hdiutil create -volname "Miri Preview" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 (cd "$DIST" && shasum -a 256 "$(basename "$DMG")" "$(basename "$ZIP")" > "Miri-$VERSION-preview.sha256")
 echo "Created unsigned preview artifacts under $DIST"
