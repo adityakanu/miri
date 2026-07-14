@@ -305,9 +305,18 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if let value = string("models", "manifest_path") { environment["MIRI_MODEL_MANIFEST"] = expand(value) }
         else if let bundledManifest = Bundle.main.resourceURL?.appending(path: "model-manifest.json"), FileManager.default.fileExists(atPath: bundledManifest.path) {
             environment["MIRI_MODEL_MANIFEST"] = bundledManifest.path
+        } else {
+            let developmentManifest = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appending(path: "Worker/models/model-manifest.json")
+            if FileManager.default.fileExists(atPath: developmentManifest.path) {
+                environment["MIRI_MODEL_MANIFEST"] = developmentManifest.path
+            }
         }
         if let value = string("models", "directory") { environment["MIRI_MODELS_DIRECTORY"] = expand(value) }
         else { environment["MIRI_MODELS_DIRECTORY"] = MiriPaths.modelsDirectory.path }
+        // Pocket TTS uses Hugging Face's cache internally. Keep that cache within
+        // Miri's removable Application Support model directory rather than ~/.cache.
+        environment["HF_HOME"] = MiriPaths.modelsDirectory.appending(path: "huggingface").path
         return environment
     }
 
@@ -922,6 +931,20 @@ private final class AudioChunkPipe: @unchecked Sendable {
         Task {
             do {
                 _ = try await worker.sendJSON(.modelInstall, body: ["consent": true])
+                currentConfiguration.sections["stt"] = [
+                    "provider": .string("moonshine"), "model": .string("small-streaming"),
+                    "model_path": .string(MiriPaths.modelsDirectory.appending(path: "moonshine/small-streaming-en").path),
+                    "model_arch": .integer(4)
+                ]
+                currentConfiguration.sections["tts", default: [:]]["provider"] = .string("pocket-tts")
+                currentConfiguration.sections["tts", default: [:]]["language"] = .string("english")
+                currentConfiguration.sections["tts", default: [:]]["voice"] = .string("alba")
+                currentConfiguration.sections["tts", default: [:]]["allow_model_downloads"] = .boolean(true)
+                currentConfiguration.sections["vad", default: [:]]["provider"] = .string("silero")
+                try await configurationStore.write(currentConfiguration)
+                await restartWorker()
+                speechHealth = "Local speech models installed"
+                lastStatus = "Speech models are ready"
             } catch {
                 speechHealth = "Model install failed: \(error.localizedDescription)"
                 lastStatus = speechHealth

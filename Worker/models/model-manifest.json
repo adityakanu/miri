@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "models": [
+    {"id":"moonshine-small-adapter","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/adapter.ort","sha256":"d8493e0ac76a198b309a8be6f74b3101e235f773ffe5d6b378278cd7e4177992","size":2867424,"filename":"moonshine/small-streaming-en/adapter.ort"},
+    {"id":"moonshine-small-cross-kv","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/cross_kv.ort","sha256":"6e57d1361717e00d73336a0c3beafedae784b1e537905ad253dee33db4007466","size":5298736,"filename":"moonshine/small-streaming-en/cross_kv.ort"},
+    {"id":"moonshine-small-decoder","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/decoder_kv.ort","sha256":"d5adfcfaa6e582144791f1568bd0f683852c7bfbb8c79acad97499da05e4ffcf","size":81435904,"filename":"moonshine/small-streaming-en/decoder_kv.ort"},
+    {"id":"moonshine-small-decoder-attention","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/decoder_kv_with_attention.ort","sha256":"2ac12d0b1ab1459ae2572b0d8f0a359a79ac83ad0a5de0b40bdb33c9357048ee","size":81380336,"filename":"moonshine/small-streaming-en/decoder_kv_with_attention.ort"},
+    {"id":"moonshine-small-encoder","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/encoder.ort","sha256":"3b21d02eff6aa5651524ada4271d37c1d7bba4eb3d256415074f2cfdbaeb526a","size":43853224,"filename":"moonshine/small-streaming-en/encoder.ort"},
+    {"id":"moonshine-small-frontend","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/frontend.ort","sha256":"e086451043c1c8652a9614e4a4a81d5807221b611584a3cf31f73779d5900003","size":30984200,"filename":"moonshine/small-streaming-en/frontend.ort"},
+    {"id":"moonshine-small-config","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/streaming_config.json","sha256":"26f02b6afb22d60871a5efd85c3d38e569cc0ddb6c5eb6e93d3260152ae8a47a","size":512,"filename":"moonshine/small-streaming-en/streaming_config.json"},
+    {"id":"moonshine-small-tokenizer","url":"https://download.moonshine.ai/model/small-streaming-en/quantized/tokenizer.bin","sha256":"6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d","size":249974,"filename":"moonshine/small-streaming-en/tokenizer.bin"}
+  ]
+}

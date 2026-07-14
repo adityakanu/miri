@@ -7,7 +7,7 @@ and `uv`:
 
 ```sh
 brew install xcodegen uv
-git clone https://github.com/miri-ai/miri.git
+git clone https://github.com/adityakanu/miri.git
 cd miri
 make bootstrap test
 swift run Miri
@@ -47,6 +47,9 @@ shasum -a 256 -c Miri-<version>.sha256
 Open the DMG and drag `Miri.app` to Applications. Miri is an accessory app; its
 waveform appears in the menu bar rather than the Dock. Grant microphone access
 only when prompted. Configuration is stored at `~/.config/miri/config.toml`.
+On first launch, choose **Install or Repair Models** in Miri's settings and
+approve the local Moonshine download before using voice input. Miri verifies
+each downloaded speech-recognition artifact against its bundled SHA-256 value.
 
 The Homebrew Cask must refer to the exact same notarized DMG and SHA-256. The
 generated release Cask is an attached artifact until it is accepted into a tap.

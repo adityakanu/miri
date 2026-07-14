@@ -48,6 +48,7 @@ uv export --project "$ROOT/Worker" --extra inference --no-dev --no-emit-project 
 uv pip install --python "$APP_PYTHON" --target "$APP/Contents/Resources/worker" \
   --require-hashes -r "$STAGE/worker-requirements.txt"
 uv pip install --python "$APP_PYTHON" --no-deps --target "$APP/Contents/Resources/worker" "$ROOT/Worker"
+cp "$ROOT/Worker/models/model-manifest.json" "$APP/Contents/Resources/model-manifest.json"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
 

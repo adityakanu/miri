@@ -32,7 +32,11 @@ public actor ConfigurationStore {
         if !FileManager.default.fileExists(atPath: url.path) {
             guard createIfMissing else { throw CocoaError(.fileNoSuchFile) }
             let clipboard = TargetDefinition(id: "clipboard", name: "Clipboard", adapter: "clipboard")
-            try writeData(Self.serialize(.init(defaultTarget: clipboard.id, targets: [clipboard])))
+            var configuration = MiriConfiguration(defaultTarget: clipboard.id, targets: [clipboard])
+            // The reference providers keep first launch functional before the user
+            // explicitly approves model downloads. installModels() atomically switches
+            // this configuration to Moonshine, Pocket TTS, and Silero afterwards.
+            try writeData(Self.serialize(configuration))
         }
         let source = try String(contentsOf: url, encoding: .utf8)
         do {
