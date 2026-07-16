@@ -28,9 +28,18 @@ of notarization unless Apple's accepted result and stapler validation are saved.
 
 ## Distribution gates
 
-- [ ] Version agrees across tag, app metadata, DMG, release notes, and Cask.
+- [ ] Version agrees across tag, app metadata, DMG, and release notes.
+- [ ] Community artifact is ad-hoc signed after every helper/runtime is bundled.
+- [ ] `codesign --verify --deep --strict` succeeds on the staged app.
+- [ ] DMG contains both `Miri.app` and the `/Applications` drag target.
+- [ ] Clean-machine Gatekeeper flow works using **Privacy & Security → Open Anyway**.
+- [ ] `Miri-<version>.dmg`, ZIP, and `.sha256` are attached to one GitHub Release.
+- [ ] A fresh user can launch without Xcode, Python, or `uv`, consent to model
+      download, install Codex MCP, and complete STT → agent → TTS.
+
+## Future notarized-channel gates
+
 - [ ] Nested code and app are signed with Developer ID and hardened runtime.
-- [ ] `codesign --verify --deep --strict` succeeds.
 - [ ] Apple notarization returns Accepted; ticket is stapled and validated.
 - [ ] Gatekeeper assessment succeeds on a clean machine.
 - [ ] `Miri-<version>.dmg`, SPDX SBOM, and `.sha256` are attached to one GitHub
@@ -48,5 +57,8 @@ APPLE_NOTARY_PROFILE=miri-notary scripts/notarize.sh dist/Miri-<version>.dmg
 scripts/release-metadata.sh <version>
 ```
 
-The first command creates an unsigned candidate. The later commands fail closed
-when credentials or required tools are missing. Do not publish unsigned output.
+For the no-cost community channel, run `scripts/build-community.sh <version>
+<standalone-python>`; it creates the normal `Miri-<version>.dmg` and ZIP with
+an ad-hoc signature. The commands above are
+the future Developer-ID/notarized channel and fail closed when credentials are
+missing.

@@ -5,6 +5,10 @@ public actor AdapterRegistry {
     public init() {}
     public func register(_ adapter: any AgentAdapter, for targetID: String) { adapters[targetID] = adapter }
     public func unregister(targetID: String) async { if let adapter = adapters.removeValue(forKey: targetID) { await adapter.disconnect() } }
+    public func disconnectAll() async {
+        let current = adapters.values; adapters.removeAll()
+        for adapter in current { await adapter.disconnect() }
+    }
     public func adapter(for targetID: String) -> (any AgentAdapter)? { adapters[targetID] }
     public func statuses() async -> [String: TargetStatus] {
         var result: [String: TargetStatus] = [:]

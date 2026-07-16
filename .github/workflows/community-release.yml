@@ -1,19 +1,19 @@
-name: Unsigned preview release
+name: Community release
 
 on:
   push:
-    tags: ["preview-v*"]
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: SemVer without the v prefix (for example 0.1.0-preview.1)
+        description: SemVer without the v prefix (for example 0.1.4)
         required: true
 
 permissions:
   contents: write
 
 jobs:
-  preview:
+  community:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -28,36 +28,36 @@ jobs:
           uv sync --project Worker --extra dev --frozen
           make test
 
-      - name: Install preview Python runtime
+      - name: Install bundled Python runtime
         run: uv python install 3.13
 
-      - name: Package unsigned DMG and ZIP
+      - name: Package ad-hoc signed DMG and ZIP
         id: package
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          version="${INPUT_VERSION:-${GITHUB_REF_NAME#preview-v}}"
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
           python_path="$(uv python find 3.13)"
-          scripts/build-preview.sh "$version" "$python_path"
+          scripts/build-community.sh "$version" "$python_path"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub preview release
+      - name: Publish GitHub community release
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ steps.package.outputs.version }}
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
-          tag="${GITHUB_REF_NAME:-preview-v$version}"
+          tag="${GITHUB_REF_NAME:-v$version}"
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="preview-v$version"
+            tag="v$version"
             git tag "$tag" "$GITHUB_SHA"
             git push origin "$tag"
           fi
           gh release create "$tag" \
-            "dist/Miri-$version-preview.dmg" \
-            "dist/Miri-$version-preview.zip" \
-            "dist/Miri-$version-preview.sha256" \
-            --prerelease --verify-tag --generate-notes --title "Miri Preview $version"
+            "dist/Miri-$version.dmg" \
+            "dist/Miri-$version.zip" \
+            "dist/Miri-$version.sha256" \
+            --verify-tag --generate-notes --title "Miri $version"

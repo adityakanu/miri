@@ -1,8 +1,15 @@
 import Foundation
 
+public enum VoiceStatusKind: String, Codable, Sendable { case progress, completion, question, blocker, warning }
 public struct VoiceStatusRequest: Codable, Sendable {
     public let text: String; public let priority: Int; public let interruptible: Bool
-    public init(text: String, priority: Int = 0, interruptible: Bool = true) { self.text = text; self.priority = priority; self.interruptible = interruptible }
+    public let kind: VoiceStatusKind?
+    public let targetID: String?
+    public let sourceWorkingDirectory: String?
+    public init(text: String, priority: Int = 0, interruptible: Bool = true, kind: VoiceStatusKind? = nil, targetID: String? = nil, sourceWorkingDirectory: String? = nil) {
+        self.text = text; self.priority = priority; self.interruptible = interruptible; self.kind = kind
+        self.targetID = targetID; self.sourceWorkingDirectory = sourceWorkingDirectory
+    }
 }
 public struct ControlResponse: Codable, Equatable, Sendable {
     public let accepted: Bool; public let message: String

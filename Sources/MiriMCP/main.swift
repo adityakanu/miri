@@ -25,7 +25,7 @@ for try await line in FileHandle.standardInput.bytes.lines {
         output = response(id: id, result: [
             "protocolVersion": "2025-06-18",
             "capabilities": ["tools": [:]],
-            "serverInfo": ["name": "miri-mcp", "version": "0.1.0"],
+            "serverInfo": ["name": "miri-mcp", "version": "0.1.4"],
         ])
     case "notifications/initialized":
         continue
@@ -34,11 +34,13 @@ for try await line in FileHandle.standardInput.bytes.lines {
     case "tools/list":
         output = response(id: id, result: ["tools": [[
             "name": "voice_status",
-            "description": "Speak a concise progress, blocker, approval, question, warning, or completion status through Miri.",
+            "description": "Speak a concise local status through Miri. Call with kind=completion when work finishes, blocker when work cannot continue, and question immediately before you stop for user input. Miri binds questions to this working directory so the user's next hotkey reply returns to the same configured agent thread. Never include secrets, code, commands, or private paths.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
                     "text": ["type": "string", "maxLength": 180],
+                    "kind": ["type": "string", "enum": ["progress", "completion", "question", "blocker", "warning"], "default": "progress"],
+                    "target_id": ["type": "string", "description": "Optional Miri target ID. Usually omit; Miri resolves the current working directory."],
                     "priority": ["oneOf": [["type": "string", "enum": ["progress", "question", "urgent"]], ["type": "integer", "minimum": 0, "maximum": 2]], "default": "progress"],
                     "interruptible": ["type": "boolean", "default": true],
                 ],
@@ -56,8 +58,19 @@ for try await line in FileHandle.standardInput.bytes.lines {
             output = response(id: id, error: ["code": -32602, "message": "priority must be progress, question, urgent, or 0...2"]); break
         }
         let interruptible = arguments?["interruptible"] as? Bool ?? true
+        let kindName = arguments?["kind"] as? String ?? "progress"
+        guard let kind = VoiceStatusKind(rawValue: kindName) else {
+            output = response(id: id, error: ["code": -32602, "message": "invalid status kind"]); break
+        }
         do {
-            let delivery = try ControlClient.send(.init(text: text, priority: priority, interruptible: interruptible))
+            let delivery = try ControlClient.send(.init(
+                text: text,
+                priority: priority,
+                interruptible: interruptible,
+                kind: kind,
+                targetID: arguments?["target_id"] as? String ?? ProcessInfo.processInfo.environment["MIRI_TARGET_ID"],
+                sourceWorkingDirectory: FileManager.default.currentDirectoryPath
+            ))
             output = response(id: id, result: ["content": [["type": "text", "text": delivery.message]], "isError": !delivery.accepted])
         } catch {
             output = response(id: id, result: ["content": [["type": "text", "text": error.localizedDescription]], "isError": true])

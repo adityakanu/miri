@@ -23,7 +23,9 @@ text is disclosed to the configured local process and inherits that process's
 privacy and network behavior. Clipboard targets place text on the macOS system
 pasteboard, where other applications may be able to read it.
 
-Model download is the planned exception to offline operation and requires
-explicit consent. A stable release must publish checksum-pinned model manifests,
-source URLs, and reviewed licenses before enabling those downloads. Wake-word
-mode is experimental and must always show a visible listening indicator.
+Model download is the exception to offline operation and requires explicit
+consent. Moonshine artifacts use Miri's URL, byte-size, and SHA-256 manifest.
+Pocket TTS 2.1.0 resolves model files from revision-pinned upstream
+configuration after the same consent; its selected voice may carry separate
+terms. Wake-word mode is experimental, uses only a user-supplied local model,
+and must always show a visible listening indicator.

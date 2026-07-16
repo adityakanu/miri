@@ -14,16 +14,30 @@ let arguments = CommandLine.arguments
 guard arguments.count >= 2 else { fail("usage: miri status <text> | miri models use-defaults --moonshine-path <directory> | miri agents test-codex", code: 64) }
 
 switch arguments[1] {
+case "--help", "help":
+    print("""
+    Usage:
+      miri status <text> [--kind KIND] [--priority 0...2] [--target ID]
+      miri models use-defaults --moonshine-path <directory>
+      miri agents test-codex
+    """)
+
 case "status":
-    guard arguments.count >= 3 else { fail("usage: miri status <text> [--priority N] [--non-interruptible]", code: 64) }
+    guard arguments.count >= 3 else { fail("usage: miri status <text> [--kind progress|completion|question|blocker|warning] [--priority N] [--target ID] [--non-interruptible]", code: 64) }
     let args = Array(arguments.dropFirst(2)); var priority = 0
     if let i = args.firstIndex(of: "--priority"), args.indices.contains(i + 1) {
         guard let parsed = parsePriority(args[i + 1]) else { fail("priority must be progress, question, urgent, or 0...2", code: 64) }
         priority = parsed
     }
+    var kind: VoiceStatusKind?
+    if let i = args.firstIndex(of: "--kind"), args.indices.contains(i + 1) {
+        guard let parsed = VoiceStatusKind(rawValue: args[i + 1].lowercased()) else { fail("invalid status kind", code: 64) }
+        kind = parsed
+    }
+    let targetID = args.firstIndex(of: "--target").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
     let flags = Set(args.filter { $0.hasPrefix("--") }); let text = args.prefix { !$0.hasPrefix("--") }.joined(separator: " ")
     do {
-        let response = try ControlClient.send(.init(text: text, priority: priority, interruptible: !flags.contains("--non-interruptible")))
+        let response = try ControlClient.send(.init(text: text, priority: priority, interruptible: !flags.contains("--non-interruptible"), kind: kind, targetID: targetID, sourceWorkingDirectory: FileManager.default.currentDirectoryPath))
         guard response.accepted else { fail(response.message) }
     } catch { fail(error.localizedDescription) }
 
@@ -84,6 +98,8 @@ case "agents" where arguments.count >= 3 && arguments[2] == "test-codex":
             switch event {
             case .responseDelta(let delta): response += delta
             case .responseCompleted(let final): response = final
+            case .interactionRequested(let request):
+                FileHandle.standardError.write(Data("Codex needs input: \(request.title)\n".utf8))
             case .completed: return response
             case .failed(let message): throw NSError(domain: "MiriCodexTest", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
             case .status: break

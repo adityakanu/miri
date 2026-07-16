@@ -2,8 +2,13 @@ import AppKit
 import Foundation
 
 public enum AdapterError: Error, Equatable, LocalizedError {
-    case processFailed(Int32, String), noRunningTurn
-    public var errorDescription: String? { switch self { case .processFailed(let status, let message): "Command exited with status \(status): \(message)"; case .noRunningTurn: "No turn is running" } }
+    case processFailed(Int32, String), noRunningTurn, unsupportedInteraction, unknownInteraction
+    public var errorDescription: String? { switch self {
+    case .processFailed(let status, let message): "Command exited with status \(status): \(message)"
+    case .noRunningTurn: "No turn is running"
+    case .unsupportedInteraction: "This adapter cannot answer interactive requests"
+    case .unknownInteraction: "The interactive request is no longer pending"
+    } }
 }
 
 public enum CommandOutputMode: Sendable { case discard, text, claudeStreamJSON }

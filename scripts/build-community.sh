@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build an unsigned, self-contained GitHub-preview artifact. This is explicitly
+# Build an ad-hoc signed, self-contained GitHub community artifact. This is
 # not a notarized release and must never be submitted to the official Homebrew
 # Cask repository.
 
@@ -44,6 +44,14 @@ PYTHON_ROOT=$("$PYTHON" -c 'import sys; print(sys.prefix)')
 ditto "$PYTHON_ROOT" "$APP/Contents/Resources/python"
 APP_PYTHON="$APP/Contents/Resources/python/bin/python3"
 
+# The standalone distribution includes Tk/Tcl developer frameworks that the
+# headless worker cannot use. Their dangling PrivateHeaders links also make
+# recursive ad-hoc signing fail with a misleading "Miri.app: No such file"
+# error, so omit them from the runtime shipped in the app.
+rm -rf \
+  "$APP/Contents/Resources/python/Frameworks/Tk.framework" \
+  "$APP/Contents/Resources/python/Frameworks/Tcl.framework"
+
 uv export --project "$ROOT/Worker" --extra inference --no-dev --no-emit-project --frozen \
   --output-file "$STAGE/worker-requirements.txt"
 uv pip install --python "$APP_PYTHON" --target "$APP/Contents/Resources/worker" \
@@ -60,13 +68,13 @@ cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
 codesign --force --deep --sign - --timestamp=none \
   --entitlements "$ROOT/App/Miri.entitlements" "$APP"
 codesign --verify --deep --strict "$APP"
-DMG="$DIST/Miri-$VERSION-preview.dmg"
-ZIP="$DIST/Miri-$VERSION-preview.zip"
+DMG="$DIST/Miri-$VERSION.dmg"
+ZIP="$DIST/Miri-$VERSION.zip"
 rm -f "$DMG" "$ZIP"
 mkdir -p "$DMG_ROOT"
 ditto "$APP" "$DMG_ROOT/Miri.app"
 ln -s /Applications "$DMG_ROOT/Applications"
-/usr/bin/hdiutil create -volname "Miri Preview" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
+/usr/bin/hdiutil create -volname "Miri $VERSION" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
-(cd "$DIST" && shasum -a 256 "$(basename "$DMG")" "$(basename "$ZIP")" > "Miri-$VERSION-preview.sha256")
-echo "Created unsigned preview artifacts under $DIST"
+(cd "$DIST" && shasum -a 256 "$(basename "$DMG")" "$(basename "$ZIP")" > "Miri-$VERSION.sha256")
+echo "Created ad-hoc signed community artifacts under $DIST"

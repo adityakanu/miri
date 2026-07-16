@@ -1,8 +1,8 @@
-name: Release candidate
+name: Notarized release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["signed-v*"]
   workflow_dispatch:
     inputs:
       version:
@@ -32,9 +32,9 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#signed-v}}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "v$version" ]]; then exit 2; fi
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "signed-v$version" ]]; then exit 2; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: astral-sh/setup-uv@v5
@@ -108,7 +108,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version='${{ steps.version.outputs.version }}'
-          tag="v$version"
+          tag="signed-v$version"
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             git tag "$tag" "$GITHUB_SHA"
             git push origin "$tag"

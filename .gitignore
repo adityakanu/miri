@@ -1,6 +1,8 @@
 .build/
 .swiftpm/
 DerivedData/
+.preview/
+Miri.xcodeproj/
 .venv/
 __pycache__/
 .pytest_cache/

@@ -23,19 +23,19 @@ you selected. Agents can send short spoken progress, blocker, approval, and
 completion updates back through Miri.
 
 > [!CAUTION]
-> Miri is early-access software. Preview downloads are unsigned and require a
+> Miri currently uses a free ad-hoc signature and requires a
 > one-time macOS **Open Anyway** action. Use them only when downloaded from
 > this repository’s GitHub Releases and verify the published checksum.
 
 ## Get Miri
 
-### Preview DMG — easiest install
+### DMG — easiest install
 
-Once a preview release is published, download `Miri-<version>-preview.dmg` from
+Download `Miri-<version>.dmg` from
 [GitHub Releases](https://github.com/adityakanu/miri/releases), then:
 
 1. Open the DMG and drag **Miri.app** to Applications.
-2. Open Miri once. macOS will block the unsigned preview.
+2. Open Miri once. macOS will block the unnotarized app.
 3. Open **System Settings → Privacy & Security** and choose **Open Anyway**.
 4. Launch Miri again, grant microphone access, and choose your shortcut.
 
@@ -44,7 +44,7 @@ the Gatekeeper confirmation is the trade-off. A checksum file accompanies every
 release:
 
 ```sh
-shasum -a 256 -c Miri-<version>-preview.sha256
+shasum -a 256 -c Miri-<version>.sha256
 ```
 
 ### Build from source
@@ -83,8 +83,14 @@ Requires Apple Silicon, macOS 14+, Xcode, Homebrew, and `uv`.
 2. Grant microphone permission when asked.
 3. Select **Clipboard** for a safe first test, or add an exact Codex thread in
    **Settings → Targets**.
-4. Hold `Option + Space`, speak, and release.
-5. Watch the pill: listening → transcribing → sending → delivered.
+4. In **Settings → Targets**, choose **Install or Repair Miri MCP**. Restart
+   Codex after registration.
+5. Hold `Option + Space`, speak, and release.
+6. Watch the pill: listening → transcribing → sending → delivered.
+
+When an agent asks a question, the next global-hotkey recording is pinned to
+that same target and thread. For a Codex permission prompt, say exactly
+`approve request` or `deny request`; vague phrases such as “yes” never approve.
 
 Press `Escape` to cancel. Miri is half-duplex: starting a new recording stops
 speech playback so it does not transcribe itself.
@@ -94,7 +100,7 @@ speech playback so it does not transcribe itself.
 Agents can request short status speech through the private local socket:
 
 ```sh
-miri status "Tests passed; checking the package now." --priority question
+miri status "Which option should I use?" --kind question --priority 1
 ```
 
 Or use `miri-mcp` and its `voice_status` MCP tool. Miri applies length limits,
@@ -128,9 +134,9 @@ adapter = "clipboard"
 | Hermes | Local API-server URL and exact session ID. |
 | Generic command | Local executable path; transcript goes to stdin. |
 
-The initial production model direction is Moonshine Small Streaming for speech
-recognition and Pocket TTS for speech. Preview users may need to configure local
-model paths while the pinned download manifest is being finalized.
+The default model manifest checksum-pins Moonshine Small Streaming artifacts.
+Speech weights download only after first-run consent and are stored under
+Miri's Application Support directory; they are not embedded in the DMG.
 
 ## Privacy
 
@@ -152,10 +158,10 @@ to the process you explicitly choose.
 | --- | --- |
 | Menu-bar app, hotkeys, overlay, routing, outbox | Implemented |
 | Local worker, streamed STT/TTS contract, VAD/wake-word paths | Implemented |
-| Codex thread targeting and agent speech | Implemented |
+| Codex exact-thread targeting, speech, questions, and approvals | Implemented |
 | Claude Code and Hermes live compatibility matrix | In validation |
 | Signed/notarized DMG and official Homebrew Cask | Planned |
-| Pinned production model manifest and M1/M4 evidence | In progress |
+| Pinned production model manifest | Implemented |
 
 The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 
@@ -167,6 +173,7 @@ The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 - [IPC contract](docs/ipc.md)
 - [Model and runtime licenses](docs/model-licenses.md)
 - [Benchmark protocol](docs/benchmarks.md)
+- [Competitive landscape](docs/competitive-landscape.md)
 
 ## Contributing
 

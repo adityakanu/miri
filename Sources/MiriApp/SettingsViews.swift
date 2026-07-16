@@ -8,6 +8,7 @@ struct MiriSettingsActions {
     var openLogs: () -> Void = {}
     var refreshCodexThreads: () -> Void = {}
     var addCodexThread: (CodexThreadSummary) -> Void = { _ in }
+    var installCodexIntegration: () -> Void = {}
     var saveActiveHotkey: () -> Void = {}
     var setInputMode: (MiriInputMode) -> Void = { _ in }
     var setModelProfile: (ModelLifecycleProfile) -> Void = { _ in }
@@ -25,6 +26,7 @@ struct MiriSettingsView: View {
     let codexThreads: [CodexThreadSummary]
     let isRefreshingCodexThreads: Bool
     let speechHealth: String
+    let codexIntegrationStatus: String
     @Binding var activeTargetID: String?
     var configurationError: String?
     var actions = MiriSettingsActions()
@@ -127,6 +129,13 @@ struct MiriSettingsView: View {
                         }
                     }
                 }
+            }
+            Section("Codex voice integration") {
+                Label(codexIntegrationStatus, systemImage: "waveform.and.mic")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Install or Repair Miri MCP…") { actions.installCodexIntegration() }
+                Text("Lets Codex announce progress, blockers, questions, and completion through Miri. Approval requests from Miri-managed threads are handled directly.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Active target") {
                 if targets.isEmpty {

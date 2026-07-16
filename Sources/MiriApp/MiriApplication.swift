@@ -35,6 +35,12 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
 }
 
+private struct PendingAgentInteraction: Sendable {
+    let request: AgentInteractionRequest
+    let target: TargetDefinition
+    let adapterBacked: Bool
+}
+
 @MainActor final class AppController: NSObject, ObservableObject {
     @Published var state: InteractionState = .idle
     @Published var lastStatus = "Miri is ready"
@@ -53,6 +59,8 @@ private final class AudioChunkPipe: @unchecked Sendable {
     @Published var agentSpeechMuted = false
     @Published var outboxEntries: [OutboxEntry] = []
     @Published var speechHealth = "Speech worker starting"
+    @Published var pendingAgentPrompt: String?
+    @Published var codexIntegrationStatus = "Checking Codex integration…"
     private var machine = InteractionMachine()
     private let policy = StatusPolicy()
     private let configurationStore = ConfigurationStore()
@@ -101,6 +109,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var listeningAttemptID: UUID?
     private var recordingTimeoutTask: Task<Void, Never>?
     private var speechTimeoutTask: Task<Void, Never>?
+    private var pendingAgentInteractions: [String: PendingAgentInteraction] = [:]
 
     override init() {
         super.init(); synthesizer.delegate = speechDelegate
@@ -127,6 +136,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 try await configurationStore.write(configuration)
             }
             apply(configuration)
+            refreshCodexIntegrationStatus()
             logger.log("configuration loaded; targets=\(configuration.targets.count)")
             await configurationStore.startWatching()
             Task { [weak self] in
@@ -264,6 +274,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
             lastAgentResponse = response
             lastAgentName = target.name
             scheduleAgentCompletionFallback(for: target, delay: 2)
+        case .interactionRequested(let request):
+            let pending = PendingAgentInteraction(request: request, target: target, adapterBacked: true)
+            pendingAgentInteractions[target.id] = pending
+            pendingAgentPrompt = request.title
+            lastStatus = "\(request.title). Hold \(activeHotkey) and say approve request or deny request."
+            logger.log("agent interaction requested target=\(target.id) kind=\(request.kind.rawValue)")
+            Task { await speakAgentResponse("\(request.title). Say approve request or deny request.", target: target.name) }
         case .completed:
             completeAgentTurn(target)
         case .failed(let message):
@@ -298,7 +315,14 @@ private final class AudioChunkPipe: @unchecked Sendable {
         targetStatuses[target.id] = .ready
         lastAgentResponse = response.isEmpty ? nil : response
         lastAgentName = target.name
-        lastStatus = "\(target.name) completed successfully"
+        if response.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") {
+            let spokenQuestion = AgentSpeechFormatter.spokenText(from: response, maxCharacters: agentSpeechLimit) ?? "\(target.name) needs your answer"
+            let request = AgentInteractionRequest(kind: .question, title: spokenQuestion)
+            pendingAgentInteractions[target.id] = .init(request: request, target: target, adapterBacked: false)
+            pendingAgentPrompt = spokenQuestion
+            activeTargetID = target.id
+            lastStatus = "\(target.name) needs your answer. Hold \(activeHotkey) to reply."
+        } else { lastStatus = "\(target.name) completed successfully" }
         logger.log("agent turn completed target=\(target.id) response_characters=\(response.count)")
         if shouldSpeakAgentResponses, let spoken = AgentSpeechFormatter.spokenText(from: response, maxCharacters: agentSpeechLimit) {
             Task { await self.speakAgentResponse(spoken, target: target.name) }
@@ -414,6 +438,47 @@ private final class AudioChunkPipe: @unchecked Sendable {
             } catch {
                 lastStatus = "Could not add Codex thread: \(error.localizedDescription)"
                 logger.log(.error, lastStatus)
+            }
+        }
+    }
+
+    private func mcpHelperURL() -> URL? {
+        let bundled = Bundle.main.bundleURL.appending(path: "Contents/Helpers/miri-mcp")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) { return bundled }
+        let sibling = Bundle.main.executableURL?.deletingLastPathComponent().appending(path: "miri-mcp")
+        if let sibling, FileManager.default.isExecutableFile(atPath: sibling.path) { return sibling }
+        let development = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appending(path: ".build/debug/miri-mcp")
+        return FileManager.default.isExecutableFile(atPath: development.path) ? development : nil
+    }
+
+    private func refreshCodexIntegrationStatus() {
+        guard let codex = findExecutable("codex") else { codexIntegrationStatus = "Codex CLI not found"; return }
+        Task { [weak self] in
+            let installed = await Task.detached { CodexMCPInstaller.isInstalled(codex: codex) }.value
+            self?.codexIntegrationStatus = installed ? "Miri MCP is registered with Codex" : "Miri MCP is not registered with Codex"
+        }
+    }
+
+    func installCodexIntegration() {
+        guard let codex = findExecutable("codex") else { lastStatus = "Codex CLI not found"; return }
+        guard let helper = mcpHelperURL() else { lastStatus = "Miri MCP helper is missing; reinstall Miri"; return }
+        let alert = NSAlert(); alert.messageText = "Install Miri voice integration for Codex?"
+        alert.informativeText = "This registers Miri's local stdio MCP helper in ~/.codex/config.toml. It opens no network port. Existing Miri registration is replaced."
+        alert.addButton(withTitle: "Install"); alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational; NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        codexIntegrationStatus = "Installing Miri MCP…"
+        Task { [weak self] in
+            let failure = await Task.detached { () -> String? in
+                do { try CodexMCPInstaller.install(codex: codex, helper: helper); return nil }
+                catch { return error.localizedDescription }
+            }.value
+            if let failure {
+                self?.codexIntegrationStatus = "Installation failed: \(failure)"
+                self?.lastStatus = "Codex integration failed: \(failure)"
+            } else {
+                self?.codexIntegrationStatus = "Miri MCP is registered with Codex"
+                self?.lastStatus = "Codex voice integration installed. Restart Codex to load it."
             }
         }
     }
@@ -537,7 +602,14 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if requiresHeldHotkey {
             guard hotkeyIsHeld, listeningAttemptID == attemptID else { return }
         }
-        do { recordingSnapshot = try router.snapshot(dedicatedHotkey: dedicatedHotkey, activeTargetID: activeTargetID) }
+        do {
+            let routed = try router.snapshot(dedicatedHotkey: dedicatedHotkey, activeTargetID: activeTargetID)
+            if dedicatedHotkey == nil,
+               pendingAgentInteractions[routed.target.id] == nil,
+               let pending = pendingAgentInteractions.values.max(by: { $0.request.createdAt < $1.request.createdAt }) {
+                recordingSnapshot = .init(target: pending.target, source: .activeSelection)
+            } else { recordingSnapshot = routed }
+        }
         catch { recordingSnapshot = nil }
         let session = UUID().uuidString; recordingSessionID = session; wakeUtterance = triggeredByWakeWord
         recordingBuffer.reset()
@@ -693,19 +765,28 @@ private final class AudioChunkPipe: @unchecked Sendable {
         guard let snapshot = recordingSnapshot else {
             lastStatus = "No target configured. Transcript: \(text)"; presentOverlay(.error(message: "No target configured")); state = .failed("No target"); return
         }
+        if let pending = pendingAgentInteractions[snapshot.target.id], pending.adapterBacked {
+            await resolveApprovalTranscript(text, pending: pending)
+            recordingSessionID = nil; recordingSnapshot = nil
+            if inputMode == .wakeWord { await startWakeMonitoring(after: 1.1) }
+            return
+        }
         let sendingLabel = showTranscriptPreview ? "\(snapshot.target.name) · \(String(text.prefix(80)))" : snapshot.target.name
         presentOverlay(.sending(target: sendingLabel))
         let outcome = await delivery.deliver(text, to: snapshot)
         switch outcome {
         case .delivered:
+            clearQuestionIfNeeded(for: snapshot.target.id)
             lastStatus = "Delivered to \(snapshot.target.name); waiting for response"
             logger.log("transcript delivered target=\(snapshot.target.id)")
             presentOverlay(.delivered(target: snapshot.target.name)); transitionOverlay(to: .waiting(target: snapshot.target.name), after: 0.65); state = machine.handle(.delivered)
         case .copied:
+            clearQuestionIfNeeded(for: snapshot.target.id)
             lastStatus = "Copied for \(snapshot.target.name)"
             logger.log("transcript copied target=\(snapshot.target.id)")
             presentOverlay(.delivered(target: snapshot.target.name)); state = machine.handle(.delivered)
         case .queued:
+            clearQuestionIfNeeded(for: snapshot.target.id)
             lastStatus = "Queued for \(snapshot.target.name)"
             logger.log("transcript queued target=\(snapshot.target.id)")
             presentOverlay(.queued(target: snapshot.target.name))
@@ -729,6 +810,34 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if inputMode == .wakeWord { await startWakeMonitoring(after: 1.1) }
     }
 
+    private func clearQuestionIfNeeded(for targetID: String) {
+        guard pendingAgentInteractions[targetID]?.request.kind == .question else { return }
+        pendingAgentInteractions.removeValue(forKey: targetID)
+        pendingAgentPrompt = pendingAgentInteractions.values.max(by: { $0.request.createdAt < $1.request.createdAt })?.request.title
+    }
+
+    private func resolveApprovalTranscript(_ transcript: String, pending: PendingAgentInteraction) async {
+        guard let response = VoiceApprovalParser.parse(transcript) else {
+            state = machine.handle(.delivered)
+            lastStatus = "Approval unchanged. Say exactly: approve request, or deny request."
+            presentOverlay(.error(message: "Say approve request or deny request")); dismissOverlay(after: 2)
+            return
+        }
+        guard let adapter = await adapterRegistry.adapter(for: pending.target.id) else {
+            fail(AdapterError.unsupportedInteraction); return
+        }
+        do {
+            try await adapter.respond(to: pending.request.id, with: response)
+            pendingAgentInteractions.removeValue(forKey: pending.target.id)
+            pendingAgentPrompt = pendingAgentInteractions.values.max(by: { $0.request.createdAt < $1.request.createdAt })?.request.title
+            state = machine.handle(.delivered)
+            let approved = response == .approve
+            lastStatus = approved ? "Approved for \(pending.target.name)" : "Denied for \(pending.target.name)"
+            presentOverlay(.delivered(target: pending.target.name)); dismissOverlay(after: 1)
+            logger.log("agent approval resolved target=\(pending.target.id) decision=\(approved ? "approve" : "deny")")
+        } catch { fail(error) }
+    }
+
     private func fail(_ error: Error) {
         capture.stop(); audioPipe.finish(); audioSenderTask?.cancel(); audioSenderTask = nil
         wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
@@ -747,6 +856,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func speak(_ request: VoiceStatusRequest) async -> ControlResponse {
         do { try await policy.validate(request) }
         catch { lastStatus = error.localizedDescription; return .init(accepted: false, message: error.localizedDescription) }
+        if request.kind == .question, let target = resolveStatusTarget(request) {
+            let interaction = AgentInteractionRequest(kind: .question, title: request.text)
+            pendingAgentInteractions[target.id] = .init(request: interaction, target: target, adapterBacked: false)
+            pendingAgentPrompt = request.text
+            activeTargetID = target.id
+            logger.log("agent question bound target=\(target.id)")
+        }
         speechRequestedAt = .now
         if synthesizer.isSpeaking {
             guard speechInterruptible && request.priority > speechPriority else { return .init(accepted: false, message: "A status of equal or higher priority is already speaking") }
@@ -757,6 +873,21 @@ private final class AudioChunkPipe: @unchecked Sendable {
             _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session); pcmPlayer?.stop()
         }
         return await startSpeech(request.text, target: "Agent", interruptible: request.interruptible, priority: request.priority)
+    }
+
+    private func resolveStatusTarget(_ request: VoiceStatusRequest) -> TargetDefinition? {
+        if let targetID = request.targetID, let target = targets.first(where: { $0.enabled && $0.id == targetID }) { return target }
+        if let source = request.sourceWorkingDirectory {
+            let canonical = URL(fileURLWithPath: source).standardizedFileURL.resolvingSymlinksInPath().path
+            let matches = targets.filter {
+                guard $0.enabled, let workingDirectory = $0.workingDirectory else { return false }
+                return URL(fileURLWithPath: expand(workingDirectory)).standardizedFileURL.resolvingSymlinksInPath().path == canonical
+            }
+            if let active = matches.first(where: { $0.id == activeTargetID }) { return active }
+            if matches.count == 1 { return matches[0] }
+        }
+        return targets.first(where: { $0.enabled && $0.id == activeTargetID })
+            ?? targets.first(where: { $0.enabled && $0.id == currentConfiguration.defaultTarget })
     }
 
     private func speakAgentResponse(_ text: String, target: String) async {
@@ -1094,11 +1225,18 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func shutdown() {
         logger.log("application shutting down")
         agentCompletionTimeoutTasks.values.forEach { $0.cancel() }
-        capture.stop(); hotkeys?.shutdown(); server?.stop(); Task { await worker.stop(); await configurationStore.stopWatching() }; NSApplication.shared.terminate(nil)
+        capture.stop(); hotkeys?.shutdown(); server?.stop()
+        Task {
+            await adapterRegistry.disconnectAll()
+            await worker.stop(); await configurationStore.stopWatching()
+            NSApplication.shared.terminate(nil)
+        }
     }
     private func speechFinished() {
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; speechSessionID = nil
-        speechInterruptible = true; speechPriority = 0; state = machine.handle(.speechFinished); overlay.hide()
+        speechInterruptible = true; speechPriority = 0; state = machine.handle(.speechFinished)
+        if let prompt = pendingAgentPrompt { presentOverlay(.needsInput(label: prompt)) }
+        else { overlay.hide() }
     }
     private func dismissOverlay(after delay: TimeInterval) {
         overlayDismissTask?.cancel()
@@ -1161,6 +1299,11 @@ private struct MiriOnboardingHost: View {
                 Button("Show Full Agent Response…") { controller.showLastAgentResponse() }
                 Button("Copy Full Agent Response") { controller.copyLastAgentResponse() }
             }
+            if let prompt = controller.pendingAgentPrompt {
+                Label(prompt, systemImage: "questionmark.bubble.fill").lineLimit(3)
+                Text("Hold \(controller.activeHotkey) to answer the same agent thread.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Menu("Active Target") {
                 if controller.targets.isEmpty { Text("No targets configured") }
                 ForEach(controller.targets) { target in
@@ -1208,6 +1351,7 @@ private struct MiriOnboardingHost: View {
                 codexThreads: controller.codexThreads,
                 isRefreshingCodexThreads: controller.isRefreshingCodexThreads,
                 speechHealth: controller.speechHealth,
+                codexIntegrationStatus: controller.codexIntegrationStatus,
                 activeTargetID: $controller.activeTargetID,
                 actions: .init(
                     requestMicrophoneAccess: controller.requestMicrophone,
@@ -1216,6 +1360,7 @@ private struct MiriOnboardingHost: View {
                     openLogs: controller.openLogs,
                     refreshCodexThreads: { Task { await controller.refreshCodexThreads() } },
                     addCodexThread: controller.addCodexThread,
+                    installCodexIntegration: controller.installCodexIntegration,
                     saveActiveHotkey: controller.saveActiveHotkey,
                     setInputMode: controller.setInputMode,
                     setModelProfile: controller.setModelProfile,
