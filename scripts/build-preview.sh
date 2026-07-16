@@ -54,10 +54,12 @@ cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
-# Xcode may leave an ad-hoc signature on the wrapper. Adding helpers and the
-# Python runtime invalidates it, and an invalid signature makes Gatekeeper call
-# an otherwise unsigned preview “damaged”. The preview is deliberately unsigned.
-codesign --remove-signature "$APP" 2>/dev/null || true
+# Adding helpers and the Python runtime invalidates Xcode's initial signature.
+# Re-sign the completed bundle ad-hoc: this costs nothing and is required for
+# executable code on Apple Silicon, but it is not Developer ID notarization.
+codesign --force --deep --sign - --timestamp=none \
+  --entitlements "$ROOT/App/Miri.entitlements" "$APP"
+codesign --verify --deep --strict "$APP"
 DMG="$DIST/Miri-$VERSION-preview.dmg"
 ZIP="$DIST/Miri-$VERSION-preview.zip"
 rm -f "$DMG" "$ZIP"
