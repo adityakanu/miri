@@ -55,6 +55,7 @@ public actor CodexAppServerAdapter: AgentAdapter {
     private var targetStatus: TargetStatus = .disconnected
     private var stderr = ""
     private var outputBuffer = Data()
+    private var completionEmitted = false
 
     public init(id: String, executable: URL, workingDirectory: URL, threadID: String? = nil, opensThread: Bool = true) {
         self.id = id; self.executable = executable; self.workingDirectory = workingDirectory
@@ -136,7 +137,7 @@ public actor CodexAppServerAdapter: AgentAdapter {
             "clientUserMessageId": messageID.uuidString,
         ])
         guard let object = try json(result), let turn = object["turn"] as? [String: Any], let turnID = turn["id"] as? String else { throw CodexAppServerError.invalidResponse }
-        activeTurnID = turnID; targetStatus = .busy; emit(.status(.busy))
+        activeTurnID = turnID; completionEmitted = false; targetStatus = .busy; emit(.status(.busy))
         return .init(messageID: messageID)
     }
 
@@ -209,14 +210,15 @@ public actor CodexAppServerAdapter: AgentAdapter {
         }
         switch method {
         case "turn/started": targetStatus = .busy; emit(.status(.busy))
-        case "turn/completed": activeTurnID = nil; targetStatus = .ready; emit(.completed); emit(.status(.ready))
+        case "turn/completed": completeTurnIfNeeded()
         case "item/agentMessage/delta": if let delta = params["delta"] as? String { emit(.responseDelta(delta)) }
         case "item/completed":
             if let item = params["item"] as? [String: Any],
                item["type"] as? String == "agentMessage",
-               item["phase"] as? String == "final_answer",
+               ((item["phase"] as? String) == "final_answer" || item["phase"] == nil),
                let text = item["text"] as? String {
                 emit(.responseCompleted(text))
+                completeTurnIfNeeded()
             }
         case "error": emit(.failed(String(describing: params)))
         default: break
@@ -249,4 +251,9 @@ public actor CodexAppServerAdapter: AgentAdapter {
     private func add(_ continuation: AsyncStream<AgentEvent>.Continuation) { let id = UUID(); continuations[id] = continuation; continuation.onTermination = { _ in Task { await self.remove(id) } } }
     private func remove(_ id: UUID) { continuations.removeValue(forKey: id) }
     private func emit(_ event: AgentEvent) { continuations.values.forEach { $0.yield(event) } }
+    private func completeTurnIfNeeded() {
+        activeTurnID = nil; targetStatus = .ready
+        if !completionEmitted { completionEmitted = true; emit(.completed) }
+        emit(.status(.ready))
+    }
 }

@@ -85,6 +85,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var configuredTargetIDs: Set<String> = []
     private var responseBuffers: [String: String] = [:]
     private var finalResponses: [String: String] = [:]
+    private var agentCompletionTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var overlayDismissTask: Task<Void, Never>?
     private var audioDeviceObserver: AudioDeviceObserver?
     private var audioSenderTask: Task<Void, Never>?
@@ -96,6 +97,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var hotkeyPressedAt: Date?
     private var recordingReleasedAt: Date?
     private var speechRequestedAt: Date?
+    private var hotkeyIsHeld = false
+    private var listeningAttemptID: UUID?
+    private var recordingTimeoutTask: Task<Void, Never>?
+    private var speechTimeoutTask: Task<Void, Never>?
 
     override init() {
         super.init(); synthesizer.delegate = speechDelegate
@@ -253,31 +258,56 @@ private final class AudioChunkPipe: @unchecked Sendable {
             responseBuffers[target.id, default: ""] += delta
             lastStatus = "\(target.name) is responding…"
             if state != .speaking { presentOverlay(.waiting(target: target.name)) }
+            scheduleAgentCompletionFallback(for: target)
         case .responseCompleted(let response):
             finalResponses[target.id] = response
             lastAgentResponse = response
             lastAgentName = target.name
+            scheduleAgentCompletionFallback(for: target, delay: 2)
         case .completed:
-            let streamed = responseBuffers.removeValue(forKey: target.id) ?? ""
-            let response = finalResponses.removeValue(forKey: target.id) ?? streamed
-            targetStatuses[target.id] = .ready
-            lastAgentResponse = response.isEmpty ? nil : response
-            lastAgentName = target.name
-            lastStatus = "\(target.name) completed successfully"
-            logger.log("agent turn completed target=\(target.id) response_characters=\(response.count)")
-            if shouldSpeakAgentResponses, let spoken = AgentSpeechFormatter.spokenText(from: response, maxCharacters: agentSpeechLimit) {
-                Task { await self.speakAgentResponse(spoken, target: target.name) }
-            } else {
-                presentOverlay(.delivered(target: target.name)); dismissOverlay(after: 1.2)
-            }
-            Task {
-                if let outcome = await delivery.drainQueue(for: target.id) { await handleDrainedQueue(outcome, target: target) }
-                await refreshOutbox()
-            }
+            completeAgentTurn(target)
         case .failed(let message):
+            agentCompletionTimeoutTasks.removeValue(forKey: target.id)?.cancel()
+            responseBuffers.removeValue(forKey: target.id); finalResponses.removeValue(forKey: target.id)
             targetStatuses[target.id] = .failed
             lastStatus = "\(target.name): \(message)"
             logger.log(.error, "agent turn failed target=\(target.id): \(message)")
+            if state == .idle { presentOverlay(.error(message: message)); dismissOverlay(after: 3) }
+        }
+    }
+
+    private func scheduleAgentCompletionFallback(for target: TargetDefinition, delay: TimeInterval = 30) {
+        agentCompletionTimeoutTasks.removeValue(forKey: target.id)?.cancel()
+        agentCompletionTimeoutTasks[target.id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self,
+                      self.responseBuffers[target.id]?.isEmpty == false || self.finalResponses[target.id]?.isEmpty == false else { return }
+                self.logger.log(.warning, "agent completion event timed out; finalizing buffered response target=\(target.id)")
+                self.completeAgentTurn(target)
+            }
+        }
+    }
+
+    private func completeAgentTurn(_ target: TargetDefinition) {
+        agentCompletionTimeoutTasks.removeValue(forKey: target.id)?.cancel()
+        let streamed = responseBuffers.removeValue(forKey: target.id) ?? ""
+        let response = finalResponses.removeValue(forKey: target.id) ?? streamed
+        guard targetStatuses[target.id] != .ready || !response.isEmpty else { return }
+        targetStatuses[target.id] = .ready
+        lastAgentResponse = response.isEmpty ? nil : response
+        lastAgentName = target.name
+        lastStatus = "\(target.name) completed successfully"
+        logger.log("agent turn completed target=\(target.id) response_characters=\(response.count)")
+        if shouldSpeakAgentResponses, let spoken = AgentSpeechFormatter.spokenText(from: response, maxCharacters: agentSpeechLimit) {
+            Task { await self.speakAgentResponse(spoken, target: target.name) }
+        } else {
+            presentOverlay(.delivered(target: target.name)); dismissOverlay(after: 1.2)
+        }
+        Task {
+            if let outcome = await delivery.drainQueue(for: target.id) { await handleDrainedQueue(outcome, target: target) }
+            await refreshOutbox()
         }
     }
 
@@ -438,11 +468,16 @@ private final class AudioChunkPipe: @unchecked Sendable {
 
     private func hotKeyEvent(_ event: GlobalHotKeyEvent) {
         switch event {
-        case .pressed(let identifier): hotkeyPressedAt = .now; Task {
+        case .pressed(let identifier):
+            guard !hotkeyIsHeld else { return }
+            hotkeyIsHeld = true; hotkeyPressedAt = .now
+            let attempt = UUID(); listeningAttemptID = attempt
+            Task {
             await stopWakeMonitoring()
-            await beginListening(dedicatedHotkey: hotkeyNames[identifier])
-        }
-        case .released: endListening()
+            await beginListening(dedicatedHotkey: hotkeyNames[identifier], attemptID: attempt)
+            }
+        case .released:
+            hotkeyIsHeld = false; listeningAttemptID = nil; endListening()
         case .cancelled: cancel()
         }
     }
@@ -467,7 +502,20 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if state == .listening { endListening() } else { hotkeyPressedAt = .now; Task { await beginListening() } }
     }
 
-    private func beginListening(dedicatedHotkey: String? = nil, triggeredByWakeWord: Bool = false) async {
+    private func beginListening(dedicatedHotkey: String? = nil, triggeredByWakeWord: Bool = false, attemptID: UUID? = nil) async {
+        let requiresHeldHotkey = !triggeredByWakeWord && attemptID != nil
+        if !triggeredByWakeWord {
+            if requiresHeldHotkey {
+                guard hotkeyIsHeld, listeningAttemptID == attemptID else { return }
+            }
+            switch state {
+            case .idle, .speaking: break
+            case .failed: state = machine.handle(.cancel)
+            default:
+                lastStatus = "Finish the current voice request before starting another"
+                return
+            }
+        }
         if state == .speaking {
             synthesizer.stopSpeaking(at: .immediate)
             if let session = speechSessionID { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) }
@@ -486,6 +534,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
         microphonePermission = await MicrophonePermissions.request()
         guard microphonePermission == .granted else { lastStatus = "Microphone access is required"; presentOverlay(.error(message: lastStatus)); return }
+        if requiresHeldHotkey {
+            guard hotkeyIsHeld, listeningAttemptID == attemptID else { return }
+        }
         do { recordingSnapshot = try router.snapshot(dedicatedHotkey: dedicatedHotkey, activeTargetID: activeTargetID) }
         catch { recordingSnapshot = nil }
         let session = UUID().uuidString; recordingSessionID = session; wakeUtterance = triggeredByWakeWord
@@ -496,6 +547,11 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 body: AudioStartBody(vadEndpointing: triggeredByWakeWord, minimumSilenceMilliseconds: vadMinimumSilenceMilliseconds),
                 sessionID: session
             )
+            if requiresHeldHotkey, (!hotkeyIsHeld || listeningAttemptID != attemptID) {
+                _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session)
+                recordingSessionID = nil; recordingSnapshot = nil
+                return
+            }
             let stream = audioPipe.open()
             audioSenderTask = Task { [worker] in
                 do {
@@ -529,6 +585,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
 
     private func endListening() {
         guard state == .listening, let session = recordingSessionID else { return }
+        listeningAttemptID = nil
         capture.stop(); audioPipe.finish(); wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingReleasedAt = .now
         state = machine.handle(.releaseToTalk); hotkeys?.enableEscapeCancellation(false)
         presentOverlay(.transcribing(target: recordingSnapshot?.target.name ?? "No target"))
@@ -536,7 +593,11 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if let metrics = AudioSignalMetrics.analyze(float32LE: audio) {
             audioDiagnostics = String(format: "Audio %.1fs · RMS %.3f · peak %.2f", metrics.durationSeconds, metrics.rms, metrics.peak)
             if let warning = metrics.qualityMessage {
-                lastStatus = warning; state = .failed(warning); presentOverlay(.error(message: warning)); dismissOverlay(after: 2); return
+                audioSenderTask?.cancel(); audioSenderTask = nil
+                recordingSessionID = nil; recordingSnapshot = nil; recordingReleasedAt = nil
+                Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) }
+                lastStatus = warning; state = machine.handle(.failure(warning)); presentOverlay(.error(message: warning)); dismissOverlay(after: 2)
+                return
             }
         }
         let sender = audioSenderTask; audioSenderTask = nil
@@ -545,6 +606,15 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 await sender?.value
                 _ = try await worker.sendJSON(.audioStop, body: EmptyBody(), sessionID: session)
             } catch { await MainActor.run { self.fail(error) } }
+        }
+        recordingTimeoutTask?.cancel()
+        recordingTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self?.recordingSessionID == session else { return }
+                self?.fail(NSError(domain: "MiriSpeechWorker", code: 2, userInfo: [NSLocalizedDescriptionKey: "Transcription timed out; the voice session was reset"]))
+            }
         }
     }
 
@@ -603,14 +673,18 @@ private final class AudioChunkPipe: @unchecked Sendable {
             return
         }
         if frame.header.messageType == MessageType.speechStop.rawValue {
+            guard frame.header.sessionID == speechSessionID else { return }
+            speechTimeoutTask?.cancel(); speechTimeoutTask = nil
             speechSessionID = nil; speechInterruptible = true; speechPriority = 0
             if let pcmPlayer { pcmPlayer.finishWhenDrained { [weak self] in self?.speechFinished() } }
             else { speechFinished() }
             return
         }
         guard frame.header.messageType == MessageType.transcriptFinal.rawValue,
+              frame.header.sessionID == recordingSessionID,
               let value = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
               let text = value["text"] as? String else { return }
+        recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         if let recordingReleasedAt {
             performance.record("final_transcript_ms", milliseconds: Date().timeIntervalSince(recordingReleasedAt) * 1_000, sessionID: frame.header.sessionID)
             self.recordingReleasedAt = nil
@@ -657,9 +731,17 @@ private final class AudioChunkPipe: @unchecked Sendable {
 
     private func fail(_ error: Error) {
         capture.stop(); audioPipe.finish(); audioSenderTask?.cancel(); audioSenderTask = nil
-        wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
+        wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
+        speechTimeoutTask?.cancel(); speechTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
+        hotkeyIsHeld = false; listeningAttemptID = nil
+        let recording = recordingSessionID; let speech = speechSessionID; let wake = wakeSessionID
+        recordingSessionID = nil; recordingSnapshot = nil; speechSessionID = nil; wakeSessionID = nil
+        if let recording { Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: recording) } }
+        if let speech { Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: speech) } }
+        if let wake { Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: wake) } }
         logger.log(.error, "interaction failed: \(error.localizedDescription)")
         state = machine.handle(.failure(error.localizedDescription)); presentOverlay(.error(message: error.localizedDescription))
+        dismissOverlay(after: 2)
     }
 
     func speak(_ request: VoiceStatusRequest) async -> ControlResponse {
@@ -691,6 +773,15 @@ private final class AudioChunkPipe: @unchecked Sendable {
         let session = UUID().uuidString; speechSessionID = session; speechInterruptible = interruptible; speechPriority = priority
         do {
             _ = try await worker.sendJSON(.speechStart, body: SpeechStartBody(text: text), sessionID: session)
+            speechTimeoutTask?.cancel()
+            speechTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard self?.speechSessionID == session else { return }
+                    self?.fail(NSError(domain: "MiriSpeechWorker", code: 3, userInfo: [NSLocalizedDescriptionKey: "Speech playback timed out; the session was reset"]))
+                }
+            }
             return .init(accepted: true, message: "Status queued")
         } catch {
             speechSessionID = nil; speechInterruptible = interruptible; speechPriority = priority
@@ -706,7 +797,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func cancel() {
         synthesizer.stopSpeaking(at: .immediate); capture.stop()
         audioPipe.finish(); audioSenderTask?.cancel(); audioSenderTask = nil
-        wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingBuffer.reset()
+        wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
+        speechTimeoutTask?.cancel(); speechTimeoutTask = nil; recordingBuffer.reset()
+        hotkeyIsHeld = false; listeningAttemptID = nil
         hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil
         if let session = wakeSessionID { Task { try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) } }
         wakeSessionID = nil
@@ -1000,9 +1093,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
     func shutdown() {
         logger.log("application shutting down")
+        agentCompletionTimeoutTasks.values.forEach { $0.cancel() }
         capture.stop(); hotkeys?.shutdown(); server?.stop(); Task { await worker.stop(); await configurationStore.stopWatching() }; NSApplication.shared.terminate(nil)
     }
-    private func speechFinished() { speechInterruptible = true; speechPriority = 0; state = machine.handle(.speechFinished); overlay.hide() }
+    private func speechFinished() {
+        speechTimeoutTask?.cancel(); speechTimeoutTask = nil; speechSessionID = nil
+        speechInterruptible = true; speechPriority = 0; state = machine.handle(.speechFinished); overlay.hide()
+    }
     private func dismissOverlay(after delay: TimeInterval) {
         overlayDismissTask?.cancel()
         overlayDismissTask = Task { [weak self] in
