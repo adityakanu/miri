@@ -21,3 +21,12 @@ targets:
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/Miri.entitlements
         GENERATE_INFOPLIST_FILE: NO
+schemes:
+  MiriApp:
+    build:
+      targets:
+        Miri: all
+    run:
+      config: Debug
+    archive:
+      config: Release

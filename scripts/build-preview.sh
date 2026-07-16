@@ -27,7 +27,7 @@ cd "$ROOT"
 xcodegen generate
 swift build -c release --product miri
 swift build -c release --product miri-mcp
-xcodebuild -project Miri.xcodeproj -scheme Miri -configuration Release \
+xcodebuild -project Miri.xcodeproj -scheme MiriApp -configuration Release \
   -derivedDataPath "$STAGE/DerivedData" CODE_SIGNING_ALLOWED=NO build
 
 APP_SOURCE="$STAGE/DerivedData/Build/Products/Release/Miri.app"
