@@ -9,11 +9,20 @@ let package = Package(
         .library(name: "MiriIPC", targets: ["MiriIPC"]),
         .executable(name: "miri", targets: ["MiriCLI"]),
         .executable(name: "miri-mcp", targets: ["MiriMCP"]),
-        .executable(name: "Miri", targets: ["MiriApp"]),
+        // Keep the development app product distinct from the `miri` CLI on
+        // case-insensitive macOS filesystems. XcodeGen still packages Miri.app.
+        .executable(name: "miri-app", targets: ["MiriApp"]),
+    ],
+    dependencies: [
+        // On-device Parakeet ASR on the Apple Neural Engine. Apache-2.0.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.6"),
     ],
     targets: [
         .target(name: "MiriIPC"),
-        .target(name: "MiriCore", dependencies: ["MiriIPC"]),
+        .target(
+            name: "MiriCore",
+            dependencies: ["MiriIPC", .product(name: "FluidAudio", package: "FluidAudio")]
+        ),
         .executableTarget(name: "MiriCLI", dependencies: ["MiriCore"]),
         .executableTarget(name: "MiriMCP", dependencies: ["MiriCore"]),
         .executableTarget(name: "MiriApp", dependencies: ["MiriCore"]),

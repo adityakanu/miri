@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
+from .cloud_stt import CloudSTTProvider
 from .providers import (
     DisabledWakeWordProvider,
     EnergyVADProvider,
@@ -94,6 +95,15 @@ def create_providers(config: ProviderConfig) -> ProviderBundle:
             raise ProviderConfigurationError("moonshine_model_arch must be an integer") from error
         stt = MoonshineSTTProvider(
             Path(path), model_arch, update_interval=_float(options, "moonshine_update_interval", 0.2)
+        )
+    elif config.stt == "cloud":
+        stt = CloudSTTProvider(
+            base_url=options.get("cloud_stt_base_url", "https://api.groq.com/openai/v1"),
+            model=options.get("cloud_stt_model", "whisper-large-v3-turbo"),
+            api_key_env=options.get("cloud_stt_api_key_env", "GROQ_API_KEY"),
+            language=options.get("cloud_stt_language", "en") or None,
+            prompt=options.get("cloud_stt_prompt"),
+            timeout=_float(options, "cloud_stt_timeout", 30.0),
         )
     else:
         raise ProviderConfigurationError(f"unknown STT provider: {config.stt}")

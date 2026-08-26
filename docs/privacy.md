@@ -1,8 +1,35 @@
 # Privacy and security
 
-Miri is designed for local audio processing after explicit model download. It
+Miri defaults to local audio processing after explicit model download. It
 does not expose an HTTP server, enable analytics, or persist transcript history.
 The private control socket is created below `$TMPDIR/miri` for the current user.
+
+## Transcription backends
+
+- **Parakeet (recommended).** NVIDIA Parakeet TDT runs on the Apple Neural
+  Engine inside Miri's own process. Audio never crosses a process boundary and
+  never reaches the network. The CoreML bundles are downloaded once from
+  Hugging Face after you approve it; `ModelHub.offlineMode` blocks every network
+  fetch when you have not consented.
+- **Moonshine.** The embedded-Python worker path. Also fully local.
+- **Cloud.** Opt-in; see below.
+
+## Cloud transcription is opt-in and off by default
+
+The optional `stt.provider = "cloud"` setting sends recorded utterance audio to
+a third-party OpenAI-compatible endpoint (Groq by default). When it is enabled,
+Miri is no longer local-only:
+
+- each utterance is uploaded as a 16 kHz mono WAV over TLS;
+- the audio is subject to the chosen provider's retention and terms, not Miri's;
+- transcription fails when the machine is offline, unlike the local providers.
+
+The API key is stored in the macOS Keychain (service `dev.miri.speech`), entered
+through **Settings → Speech**. Miri forwards it only to the worker child process
+and never writes it to `config.toml`, which stores just the endpoint and model.
+An exported `GROQ_API_KEY` still works as a fallback, but note that apps launched
+from Finder do not inherit your shell environment, so the Keychain is the
+reliable path. Choose the on-device provider for fully offline operation.
 
 Expected data locations are:
 

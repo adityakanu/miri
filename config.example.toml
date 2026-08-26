@@ -9,9 +9,29 @@ profile = "responsive"
 active_target = "option+space"
 
 [stt]
-provider = "moonshine"
-model_path = "~/Library/Application Support/Miri/Models/moonshine"
-model_arch = 4 # Moonshine Small Streaming
+# "parakeet" runs NVIDIA Parakeet TDT on the Apple Neural Engine, in Miri's own
+# process: no Python worker, no network. Recommended. Choose it in
+# Settings > Speech, which also downloads the model after asking.
+provider = "parakeet"
+
+# "moonshine" is the older embedded-Python path.
+# provider = "moonshine"
+# model_path = "~/Library/Application Support/Miri/Models/moonshine"
+# model_arch = 4 # Moonshine Small Streaming
+
+# Cloud transcription is opt-in and configured in Settings > Speech, which also
+# stores the API key in your Keychain. These keys are written by the app; the
+# key itself is never stored here.
+# provider = "cloud"
+# cloud_base_url = "https://api.groq.com/openai/v1"
+# cloud_model = "whisper-large-v3-turbo"
+# cloud_language = "en"
+# cloud_prompt = "Codex, Miri, SwiftUI, AVFoundation"  # bias toward your jargon
+
+# Point Miri at an agent CLI installed somewhere unusual (mise, asdf, volta).
+# By default it searches your login shell's PATH, then the common prefixes.
+# [agents]
+# codex_path = "~/.local/share/mise/shims/codex"
 
 [vad]
 provider = "silero"

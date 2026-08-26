@@ -19,6 +19,7 @@ case "--help", "help":
     Usage:
       miri status <text> [--kind KIND] [--priority 0...2] [--target ID]
       miri models use-defaults --moonshine-path <directory>
+      miri models use-cloud [--model M] [--base-url URL] [--api-key-env VAR]
       miri agents test-codex
     """)
 
@@ -61,6 +62,31 @@ case "models" where arguments.count >= 5 && ["use-defaults", "use-accuracy"].con
         print("Configured Moonshine \(accuracy ? "Medium" : "Small") Streaming and Pocket TTS in \(url.path)")
     } catch { fail(error.localizedDescription) }
 
+case "models" where arguments.count >= 3 && arguments[2] == "use-cloud":
+    let url = URL(fileURLWithPath: MiriPaths.configPath)
+    func option(_ name: String) -> String? {
+        arguments.firstIndex(of: name).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+    }
+    do {
+        let source = try String(contentsOf: url, encoding: .utf8)
+        var configuration = try MiriConfigurationParser.parse(source, file: url.path).configuration
+        configuration.sections["stt", default: [:]]["provider"] = .string("cloud")
+        configuration.sections["stt", default: [:]]["cloud_model"] = .string(option("--model") ?? "whisper-large-v3-turbo")
+        configuration.sections["stt", default: [:]]["cloud_base_url"] = .string(option("--base-url") ?? "https://api.groq.com/openai/v1")
+        let keyEnv = option("--api-key-env") ?? "GROQ_API_KEY"
+        configuration.sections["stt", default: [:]]["cloud_api_key_env"] = .string(keyEnv)
+        _ = try MiriConfigurationParser.parse(String(decoding: ConfigurationStore.serialize(configuration), as: UTF8.self), file: url.path)
+        try ConfigurationStore.serialize(configuration).write(to: url, options: .atomic)
+        print("Configured cloud transcription in \(url.path)")
+        if SecretStore.hasSecret() {
+            print("Using the API key stored in your Keychain.")
+        } else if ProcessInfo.processInfo.environment[keyEnv] != nil {
+            print("note: found \(keyEnv) in this shell. Save it in Settings > Speech so Miri can use it when launched from Finder.")
+        } else {
+            print("warning: no API key stored. Add one in Settings > Speech.")
+        }
+    } catch { fail(error.localizedDescription) }
+
 case "agents" where arguments.count >= 5 && arguments[2] == "use-codex":
     guard let index = arguments.firstIndex(of: "--thread-id"), arguments.indices.contains(index + 1) else { fail("--thread-id is required", code: 64) }
     let url = URL(fileURLWithPath: MiriPaths.configPath)
@@ -77,9 +103,7 @@ case "agents" where arguments.count >= 5 && arguments[2] == "use-codex":
 
 case "agents" where arguments.count >= 5 && arguments[2] == "probe-codex":
     guard let index = arguments.firstIndex(of: "--thread-id"), arguments.indices.contains(index + 1) else { fail("--thread-id is required", code: 64) }
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let candidates = [home.appending(path: ".local/bin/codex"), URL(fileURLWithPath: "/opt/homebrew/bin/codex"), URL(fileURLWithPath: "/usr/local/bin/codex")]
-    guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { fail("Codex executable not found") }
+    guard let executable = ExecutableResolver.find("codex") else { fail("Codex executable not found") }
     let adapter = CodexAppServerAdapter(id: "probe", executable: executable, workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath), threadID: arguments[index + 1])
     do {
         try await adapter.connect()
@@ -88,9 +112,7 @@ case "agents" where arguments.count >= 5 && arguments[2] == "probe-codex":
     } catch { fail(error.localizedDescription) }
 
 case "agents" where arguments.count >= 3 && arguments[2] == "test-codex":
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let candidates = [home.appending(path: ".local/bin/codex"), URL(fileURLWithPath: "/opt/homebrew/bin/codex"), URL(fileURLWithPath: "/usr/local/bin/codex")]
-    guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { fail("Codex executable not found") }
+    guard let executable = ExecutableResolver.find("codex") else { fail("Codex executable not found") }
     let adapter = CodexAppServerAdapter(id: "smoke-test", executable: executable, workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
     let eventTask = Task<String, Error> {
         var response = ""
@@ -128,9 +150,7 @@ case "agents" where arguments.count >= 3 && arguments[2] == "test-codex":
     }
 
 case "agents" where arguments.count >= 3 && arguments[2] == "list-codex":
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let candidates = [home.appending(path: ".local/bin/codex"), URL(fileURLWithPath: "/opt/homebrew/bin/codex"), URL(fileURLWithPath: "/usr/local/bin/codex")]
-    guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { fail("Codex executable not found") }
+    guard let executable = ExecutableResolver.find("codex") else { fail("Codex executable not found") }
     do {
         let configURL = URL(fileURLWithPath: MiriPaths.configPath)
         let configuration = try MiriConfigurationParser.parse(String(contentsOf: configURL, encoding: .utf8), file: configURL.path).configuration

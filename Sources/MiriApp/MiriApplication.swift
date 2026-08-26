@@ -61,10 +61,19 @@ private struct PendingAgentInteraction: Sendable {
     @Published var speechHealth = "Speech worker starting"
     @Published var pendingAgentPrompt: String?
     @Published var codexIntegrationStatus = "Checking Codex integration…"
+    @Published var sttBackend: STTBackend = .local
+    @Published var cloudSettings = STTCloudSettings()
+    @Published var cloudAPIKey = ""
+    @Published var cloudKeyIsStored = SecretStore.hasSecret()
+    @Published var sttTestStatus: String?
+    @Published var isTestingSTT = false
+    @Published var parakeetInstalled = ParakeetTranscriber.isInstalled
+    @Published var isInstallingParakeet = false
     private var machine = InteractionMachine()
     private let policy = StatusPolicy()
     private let configurationStore = ConfigurationStore()
     private let worker = WorkerClient()
+    private let parakeet = ParakeetTranscriber()
     private let capture = MicrophoneCapture()
     private let recordingBuffer = RecordingBuffer()
     private let audioPipe = AudioChunkPipe()
@@ -199,6 +208,22 @@ private struct PendingAgentInteraction: Sendable {
         else { activeHotkey = "option+space" }
         configureHotkeys(for: configuration.targets.filter(\.enabled))
         if case .string(let profile)? = configuration.sections["audio"]?["profile"] { modelProfile = ModelLifecycleProfile(rawValue: profile) ?? .responsive }
+        if case .string(let provider)? = configuration.sections["stt"]?["provider"] { sttBackend = STTBackend(configurationValue: provider) }
+        else { sttBackend = .local }
+        if sttBackend == .parakeet {
+            Task { [weak self] in await self?.loadParakeetIfInstalled() }
+        }
+        func sttString(_ key: String) -> String? {
+            if case .string(let value)? = configuration.sections["stt"]?[key] { return value }
+            return nil
+        }
+        cloudSettings = STTCloudSettings(
+            baseURL: sttString("cloud_base_url") ?? STTPreset.groq.baseURL,
+            model: sttString("cloud_model") ?? STTPreset.groq.model,
+            language: sttString("cloud_language") ?? "en",
+            prompt: sttString("cloud_prompt") ?? ""
+        )
+        cloudKeyIsStored = SecretStore.hasSecret()
         if case .string(let display)? = configuration.sections["ui"]?["display"], let id = UInt32(display) { overlay.setPinnedDisplay(id) }
         else { overlay.setPinnedDisplay(nil) }
         switch configuration.sections["audio"]?["speech_volume"] {
@@ -348,6 +373,16 @@ private struct PendingAgentInteraction: Sendable {
         if let value = string("vad", "provider") { environment["MIRI_VAD_PROVIDER"] = value }
         if let value = string("wakeword", "provider") { environment["MIRI_WAKE_WORD_PROVIDER"] = value }
         if let value = string("stt", "model_path") { environment["MIRI_PROVIDER_MOONSHINE_MODEL_PATH"] = expand(value) }
+        for key in ["base_url", "model", "api_key_env", "language", "prompt", "timeout"] {
+            if let value = string("stt", "cloud_\(key)") { environment["MIRI_PROVIDER_CLOUD_STT_\(key.uppercased())"] = value }
+        }
+        // GUI launches do not inherit the login shell, so the Keychain is the
+        // primary source and an exported variable is only a fallback. The secret
+        // is passed to the worker child process and never written to config.toml.
+        environment["MIRI_PROVIDER_CLOUD_STT_API_KEY_ENV"] = "MIRI_CLOUD_STT_KEY"
+        if let secret = SecretStore.read() ?? ProcessInfo.processInfo.environment["GROQ_API_KEY"] {
+            environment["MIRI_CLOUD_STT_KEY"] = secret
+        }
         if case .integer(let value)? = currentConfiguration.sections["stt"]?["model_arch"] { environment["MIRI_PROVIDER_MOONSHINE_MODEL_ARCH"] = String(value) }
         if let value = string("tts", "config_path") { environment["MIRI_PROVIDER_POCKET_TTS_CONFIG_PATH"] = expand(value) }
         if let value = string("tts", "language") { environment["MIRI_PROVIDER_POCKET_TTS_LANGUAGE"] = value }
@@ -373,6 +408,10 @@ private struct PendingAgentInteraction: Sendable {
         environment["HF_HOME"] = MiriPaths.modelsDirectory.appending(path: "huggingface").path
         return environment
     }
+
+    /// True when transcription runs in-process on the ANE, so the Python
+    /// worker is not involved in the recording path at all.
+    private var usesParakeet: Bool { sttBackend == .parakeet }
 
     private var shouldSpeakAgentResponses: Bool {
         if agentSpeechMuted { return false }
@@ -526,9 +565,9 @@ private struct PendingAgentInteraction: Sendable {
 
     private func expand(_ path: String) -> String { (path as NSString).expandingTildeInPath }
     private func findExecutable(_ name: String) -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [home.appending(path: ".local/bin/\(name)"), URL(fileURLWithPath: "/opt/homebrew/bin/\(name)"), URL(fileURLWithPath: "/usr/local/bin/\(name)")]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+        var override: String?
+        if case .string(let value)? = currentConfiguration.sections["agents"]?["\(name)_path"] { override = value }
+        return ExecutableResolver.find(name, override: override)
     }
 
     private func hotKeyEvent(_ event: GlobalHotKeyEvent) {
@@ -587,7 +626,7 @@ private struct PendingAgentInteraction: Sendable {
             pcmPlayer?.stop(); speechSessionID = nil; speechInterruptible = true
         }
         let workerState = await worker.state
-        guard workerState == .running else {
+        guard usesParakeet || workerState == .running else {
             let diagnostic = await worker.diagnostic
             let message: String
             switch workerState {
@@ -614,29 +653,43 @@ private struct PendingAgentInteraction: Sendable {
         let session = UUID().uuidString; recordingSessionID = session; wakeUtterance = triggeredByWakeWord
         recordingBuffer.reset()
         do {
-            _ = try await worker.sendJSON(
-                .audioStart,
-                body: AudioStartBody(vadEndpointing: triggeredByWakeWord, minimumSilenceMilliseconds: vadMinimumSilenceMilliseconds),
-                sessionID: session
-            )
+            if usesParakeet {
+                try await parakeet.startStream()
+            } else {
+                _ = try await worker.sendJSON(
+                    .audioStart,
+                    body: AudioStartBody(vadEndpointing: triggeredByWakeWord, minimumSilenceMilliseconds: vadMinimumSilenceMilliseconds),
+                    sessionID: session
+                )
+            }
             if requiresHeldHotkey, (!hotkeyIsHeld || listeningAttemptID != attemptID) {
-                _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session)
+                if usesParakeet { await parakeet.cancel() }
+                else { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) }
                 recordingSessionID = nil; recordingSnapshot = nil
                 return
             }
-            let stream = audioPipe.open()
-            audioSenderTask = Task { [worker] in
-                do {
-                    for await data in stream {
-                        _ = try await worker.send(messageType: .audioChunk, sessionID: session, payload: data, kind: .pcmFloat32)
-                    }
-                } catch { await MainActor.run { self.fail(error) } }
+            if usesParakeet {
+                // Samples go straight to the on-device model: no IPC, no
+                // subprocess, nothing leaves this process.
+                try capture.start { [recordingBuffer, parakeet] chunk in
+                    recordingBuffer.append(chunk.samples.withUnsafeBytes { Data($0) })
+                    Task { await parakeet.accept(chunk.samples) }
+                } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
+            } else {
+                let stream = audioPipe.open()
+                audioSenderTask = Task { [worker] in
+                    do {
+                        for await data in stream {
+                            _ = try await worker.send(messageType: .audioChunk, sessionID: session, payload: data, kind: .pcmFloat32)
+                        }
+                    } catch { await MainActor.run { self.fail(error) } }
+                }
+                try capture.start { [recordingBuffer, audioPipe] chunk in
+                    let data = chunk.samples.withUnsafeBytes { Data($0) }
+                    recordingBuffer.append(data)
+                    audioPipe.yield(data)
+                } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
             }
-            try capture.start { [recordingBuffer, audioPipe] chunk in
-                let data = chunk.samples.withUnsafeBytes { Data($0) }
-                recordingBuffer.append(data)
-                audioPipe.yield(data)
-            } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
             state = machine.handle(.pressToTalk); hotkeys?.enableEscapeCancellation(true)
             let target = recordingSnapshot?.target.name ?? "No target"
             lastStatus = "Listening for \(target)"; presentOverlay(.listening(target: target))
@@ -675,8 +728,14 @@ private struct PendingAgentInteraction: Sendable {
         let sender = audioSenderTask; audioSenderTask = nil
         Task {
             do {
-                await sender?.value
-                _ = try await worker.sendJSON(.audioStop, body: EmptyBody(), sessionID: session)
+                if usesParakeet {
+                    let text = try await parakeet.finish()
+                    guard recordingSessionID == session else { return }
+                    await handleFinalTranscript(text, sessionID: session)
+                } else {
+                    await sender?.value
+                    _ = try await worker.sendJSON(.audioStop, body: EmptyBody(), sessionID: session)
+                }
             } catch { await MainActor.run { self.fail(error) } }
         }
         recordingTimeoutTask?.cancel()
@@ -756,9 +815,15 @@ private struct PendingAgentInteraction: Sendable {
               frame.header.sessionID == recordingSessionID,
               let value = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
               let text = value["text"] as? String else { return }
+        await handleFinalTranscript(text, sessionID: frame.header.sessionID)
+    }
+
+    /// Shared terminal step for every transcription backend. The Python worker
+    /// reaches it through `handleWorkerFrame`; Parakeet calls it directly.
+    private func handleFinalTranscript(_ text: String, sessionID: String?) async {
         recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         if let recordingReleasedAt {
-            performance.record("final_transcript_ms", milliseconds: Date().timeIntervalSince(recordingReleasedAt) * 1_000, sessionID: frame.header.sessionID)
+            performance.record("final_transcript_ms", milliseconds: Date().timeIntervalSince(recordingReleasedAt) * 1_000, sessionID: sessionID)
             self.recordingReleasedAt = nil
         }
         state = machine.handle(.transcriptReady)
@@ -840,6 +905,7 @@ private struct PendingAgentInteraction: Sendable {
 
     private func fail(_ error: Error) {
         capture.stop(); audioPipe.finish(); audioSenderTask?.cancel(); audioSenderTask = nil
+        Task { [parakeet] in await parakeet.cancel() }
         wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
         hotkeyIsHeld = false; listeningAttemptID = nil
@@ -975,6 +1041,124 @@ private struct PendingAgentInteraction: Sendable {
                 try await configurationStore.write(currentConfiguration)
                 lastStatus = "\(profile.displayName) speech profile enabled"
             } catch { lastStatus = "Could not save model profile: \(error.localizedDescription)" }
+        }
+    }
+
+    func applySTTPreset(_ preset: STTPreset) {
+        cloudSettings.apply(preset)
+        sttTestStatus = nil
+    }
+
+    /// Loads Parakeet only if its models are already on disk. Never downloads:
+    /// that requires the explicit consent flow in `installParakeetModels`.
+    private func loadParakeetIfInstalled() async {
+        parakeetInstalled = ParakeetTranscriber.isInstalled
+        guard parakeetInstalled else {
+            speechHealth = "On-device model is not installed yet"
+            return
+        }
+        do {
+            try await parakeet.load(allowDownload: false)
+            speechHealth = "On-device speech model ready"
+        } catch {
+            speechHealth = "On-device model failed to load: \(error.localizedDescription)"
+            logger.log(.error, speechHealth)
+        }
+    }
+
+    /// Downloads the Parakeet CoreML bundles after explicit consent.
+    func installParakeetModels() {
+        guard !isInstallingParakeet else { return }
+        let alert = NSAlert()
+        alert.messageText = "Download the on-device speech model?"
+        alert.informativeText = "Miri downloads about 470 MB from Hugging Face once. After that, transcription runs entirely on this Mac with no network access."
+        alert.addButton(withTitle: "Download"); alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational; NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        isInstallingParakeet = true
+        speechHealth = "Downloading on-device speech model…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await parakeet.load(allowDownload: true)
+                isInstallingParakeet = false
+                parakeetInstalled = ParakeetTranscriber.isInstalled
+                speechHealth = "On-device speech model ready"
+                lastStatus = "On-device speech model installed"
+            } catch {
+                isInstallingParakeet = false
+                speechHealth = "Download failed: \(error.localizedDescription)"
+                lastStatus = speechHealth
+                logger.log(.error, speechHealth)
+            }
+        }
+    }
+
+    /// Persists the speech-backend choice and restarts the worker so the new
+    /// provider takes effect without requiring a relaunch.
+    func saveSTTSettings() {
+        sttTestStatus = nil
+        if sttBackend == .cloud, let problem = cloudSettings.validationMessage {
+            lastStatus = problem; sttTestStatus = problem; return
+        }
+        if sttBackend == .parakeet, !ParakeetTranscriber.isInstalled {
+            sttTestStatus = "Download the on-device model before selecting it."
+            return
+        }
+        if !cloudAPIKey.isEmpty {
+            do { try SecretStore.save(cloudAPIKey); cloudAPIKey = ""; cloudKeyIsStored = true }
+            catch { lastStatus = error.localizedDescription; sttTestStatus = error.localizedDescription; return }
+        }
+        currentConfiguration.sections["stt", default: [:]]["provider"] = .string(sttBackend.configurationValue)
+        if sttBackend == .cloud {
+            currentConfiguration.sections["stt", default: [:]]["cloud_base_url"] = .string(cloudSettings.trimmedBaseURL)
+            currentConfiguration.sections["stt", default: [:]]["cloud_model"] = .string(cloudSettings.trimmedModel)
+            currentConfiguration.sections["stt", default: [:]]["cloud_language"] = .string(cloudSettings.language)
+            currentConfiguration.sections["stt", default: [:]]["cloud_prompt"] = .string(cloudSettings.prompt)
+        }
+        let selected = sttBackend
+        Task {
+            do {
+                try await configurationStore.write(currentConfiguration)
+                switch selected {
+                case .parakeet:
+                    await loadParakeetIfInstalled()
+                    lastStatus = "On-device transcription enabled"
+                case .local:
+                    await parakeet.unload()
+                    lastStatus = "Moonshine transcription enabled"
+                case .cloud:
+                    await parakeet.unload()
+                    lastStatus = "Cloud transcription enabled"
+                }
+                // Moonshine and cloud both run inside the worker; Parakeet does
+                // not, but the worker still owns TTS, so it stays running.
+                await restartWorker()
+            } catch { lastStatus = "Could not save speech settings: \(error.localizedDescription)" }
+        }
+    }
+
+    func removeStoredKey() {
+        do { try SecretStore.remove(); cloudKeyIsStored = false; cloudAPIKey = ""; sttTestStatus = nil
+             lastStatus = "Removed the stored API key" }
+        catch { lastStatus = error.localizedDescription }
+    }
+
+    /// Sends one second of silence to the configured endpoint. This proves the
+    /// URL, model, and credential are accepted before the user relies on voice.
+    func testSTTConnection() {
+        guard sttBackend == .cloud else { sttTestStatus = "On-device transcription needs no connection test."; return }
+        if let problem = cloudSettings.validationMessage { sttTestStatus = problem; return }
+        let key = cloudAPIKey.isEmpty ? SecretStore.read() : cloudAPIKey
+        let settings = cloudSettings
+        isTestingSTT = true
+        sttTestStatus = "Testing…"
+        Task { [weak self] in
+            let result = await Task.detached { CloudSTTProbe.check(settings: settings, apiKey: key) }.value
+            await MainActor.run {
+                self?.isTestingSTT = false
+                self?.sttTestStatus = result
+            }
         }
     }
 
@@ -1138,8 +1322,13 @@ private struct PendingAgentInteraction: Sendable {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
             await worker.stop()
+            await parakeet.unload()
             do {
                 if FileManager.default.fileExists(atPath: MiriPaths.modelsDirectory.path) { try FileManager.default.removeItem(at: MiriPaths.modelsDirectory) }
+                // The on-device CoreML bundles live outside MiriPaths, so a
+                // "delete everything" action has to remove them explicitly.
+                try ParakeetTranscriber.removeDownloadedModels()
+                parakeetInstalled = false
                 speechHealth = "Models deleted"; lastStatus = "Models deleted. Reinstall models, then restart Miri."
                 logger.log("downloaded models deleted by user")
             } catch { lastStatus = "Could not delete models: \(error.localizedDescription)"; logger.log(.error, lastStatus) }
@@ -1183,9 +1372,13 @@ private struct PendingAgentInteraction: Sendable {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
             await worker.stop(); await configurationStore.stopWatching()
+            await parakeet.unload()
             for url in [MiriPaths.applicationSupport, MiriPaths.cachesDirectory, MiriPaths.logsDirectory, URL(fileURLWithPath: MiriPaths.configPath).deletingLastPathComponent()] {
                 try? FileManager.default.removeItem(at: url)
             }
+            // FluidAudio keeps its CoreML bundles in its own directory.
+            try? ParakeetTranscriber.removeDownloadedModels()
+            try? SecretStore.remove()
             UserDefaults.standard.removeObject(forKey: "didCompleteOnboarding")
             NSApplication.shared.terminate(nil)
         }
@@ -1353,6 +1546,14 @@ private struct MiriOnboardingHost: View {
                 speechHealth: controller.speechHealth,
                 codexIntegrationStatus: controller.codexIntegrationStatus,
                 activeTargetID: $controller.activeTargetID,
+                sttBackend: $controller.sttBackend,
+                cloudSettings: $controller.cloudSettings,
+                cloudAPIKey: $controller.cloudAPIKey,
+                cloudKeyIsStored: controller.cloudKeyIsStored,
+                sttTestStatus: controller.sttTestStatus,
+                isTestingSTT: controller.isTestingSTT,
+                parakeetInstalled: controller.parakeetInstalled,
+                isInstallingParakeet: controller.isInstallingParakeet,
                 actions: .init(
                     requestMicrophoneAccess: controller.requestMicrophone,
                     openMicrophoneSettings: controller.openMicrophoneSettings,
@@ -1366,7 +1567,12 @@ private struct MiriOnboardingHost: View {
                     setModelProfile: controller.setModelProfile,
                     installModels: controller.installModels,
                     deleteModels: controller.deleteDownloadedModels,
-                    resetAllData: controller.resetAllData
+                    resetAllData: controller.resetAllData,
+                    applySTTPreset: controller.applySTTPreset,
+                    saveSTTSettings: controller.saveSTTSettings,
+                    testSTTConnection: controller.testSTTConnection,
+                    removeStoredKey: controller.removeStoredKey,
+                    installParakeetModels: controller.installParakeetModels
                 )
             )
         }

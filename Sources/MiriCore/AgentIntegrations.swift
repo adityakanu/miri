@@ -3,24 +3,6 @@ import Foundation
 /// Managed CLI fallbacks are addressable and safe: transcript bytes are always stdin,
 /// never interpolated into a shell command. Native/app-server transports can replace
 /// these wrappers without changing routing or UI contracts.
-public actor CodexAdapter: AgentAdapter {
-    public nonisolated let id: String
-    public nonisolated let capabilities: AdapterCapabilities = [.cancellation]
-    private let command: GenericCommandAdapter
-    public init(id: String, executable: URL, workingDirectory: URL, sessionID: String? = nil) {
-        self.id = id
-        var arguments = ["exec"]
-        if let sessionID { arguments += ["resume", sessionID, "-"] } else { arguments += ["-"] }
-        command = GenericCommandAdapter(id: id + ".command", executable: executable, arguments: arguments, workingDirectory: workingDirectory)
-    }
-    public func connect() async throws { try await command.connect() }
-    public func disconnect() async { await command.disconnect() }
-    public func status() async -> TargetStatus { await command.status() }
-    public func sendUserMessage(_ text: String) async throws -> DeliveryReceipt { try await command.sendUserMessage(text) }
-    public func cancelTurn() async throws { try await command.cancelTurn() }
-    public nonisolated func events() -> AsyncStream<AgentEvent> { command.events() }
-}
-
 public actor ClaudeCodeAdapter: AgentAdapter {
     public nonisolated let id: String
     public nonisolated let capabilities: AdapterCapabilities = [.cancellation]

@@ -49,11 +49,13 @@ public enum MiriConfigurationParser {
         "ui": ["overlay", "show_transcript_preview", "display", "animation"],
         "audio": ["input_device", "output_device", "pause_stt_while_speaking", "speech_volume", "profile", "sample_rate"],
         "hotkeys": ["active_target", "cancel", "stop_speaking"],
-        "stt": ["provider", "model", "model_path", "model_arch", "language", "transcription_interval_ms"],
+        "stt": ["provider", "model", "model_path", "model_arch", "language", "transcription_interval_ms",
+                "cloud_base_url", "cloud_model", "cloud_api_key_env", "cloud_language", "cloud_prompt", "cloud_timeout"],
         "tts": ["provider", "model", "language", "config_path", "voice", "voice_path", "max_characters", "allow_model_downloads", "speak_agent_responses", "agent_response_max_characters"],
         "vad": ["provider", "threshold", "minimum_silence_ms"],
         "wakeword": ["enabled", "provider", "model_path", "threshold", "utterance_timeout_seconds"],
         "models": ["stt", "tts", "manifest_path", "directory"],
+        "agents": ["codex_path", "claude_path"],
         "interaction": ["mode", "half_duplex", "wake_word"]
     ]
     private static let targetKeys: Set<String> = ["id", "name", "agent", "adapter", "working_directory", "project", "session", "endpoint", "hotkey", "enabled", "queue_replacement"]

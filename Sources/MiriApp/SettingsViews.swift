@@ -15,6 +15,11 @@ struct MiriSettingsActions {
     var installModels: () -> Void = {}
     var deleteModels: () -> Void = {}
     var resetAllData: () -> Void = {}
+    var applySTTPreset: (STTPreset) -> Void = { _ in }
+    var saveSTTSettings: () -> Void = {}
+    var testSTTConnection: () -> Void = {}
+    var removeStoredKey: () -> Void = {}
+    var installParakeetModels: () -> Void = {}
 }
 
 struct MiriSettingsView: View {
@@ -28,6 +33,14 @@ struct MiriSettingsView: View {
     let speechHealth: String
     let codexIntegrationStatus: String
     @Binding var activeTargetID: String?
+    @Binding var sttBackend: STTBackend
+    @Binding var cloudSettings: STTCloudSettings
+    @Binding var cloudAPIKey: String
+    let cloudKeyIsStored: Bool
+    let sttTestStatus: String?
+    let isTestingSTT: Bool
+    let parakeetInstalled: Bool
+    let isInstallingParakeet: Bool
     var configurationError: String?
     var actions = MiriSettingsActions()
 
@@ -35,13 +48,126 @@ struct MiriSettingsView: View {
         TabView {
             general
                 .tabItem { Label("General", systemImage: "gearshape") }
+            speech
+                .tabItem { Label("Speech", systemImage: "waveform") }
             targetsPane
                 .tabItem { Label("Targets", systemImage: "arrow.triangle.branch") }
             privacy
                 .tabItem { Label("Privacy", systemImage: "hand.raised") }
         }
-        .frame(minWidth: 620, idealWidth: 680, minHeight: 470, idealHeight: 520)
+        .frame(minWidth: 620, idealWidth: 680, minHeight: 470, idealHeight: 560)
         .accessibilityLabel("Miri settings")
+    }
+
+    private var speech: some View {
+        Form {
+            Section("Transcription") {
+                Picker("Speech recognition", selection: $sttBackend) {
+                    ForEach(STTBackend.allCases) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.radioGroup)
+                Text(sttBackend.detail).font(.caption).foregroundStyle(.secondary)
+            }
+
+            if sttBackend == .parakeet {
+                Section("On-device model") {
+                    HStack {
+                        Label(
+                            parakeetInstalled ? "Parakeet TDT is installed" : "Parakeet TDT is not installed",
+                            systemImage: parakeetInstalled ? "checkmark.circle.fill" : "arrow.down.circle"
+                        )
+                        .foregroundStyle(parakeetInstalled ? .green : .primary)
+                        Spacer()
+                        if !parakeetInstalled {
+                            Button(isInstallingParakeet ? "Downloading…" : "Download Model…") {
+                                actions.installParakeetModels()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isInstallingParakeet)
+                        }
+                    }
+                    Text("About 470 MB, downloaded once from Hugging Face. After that Miri transcribes with no network access at all.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if sttBackend == .cloud {
+                Section("Provider") {
+                    HStack(spacing: 8) {
+                        ForEach(STTPreset.all) { preset in
+                            Button(preset.name) { actions.applySTTPreset(preset) }
+                                .buttonStyle(.bordered)
+                                .accessibilityHint(preset.note)
+                        }
+                    }
+                    Text(STTPreset.matching(baseURL: cloudSettings.trimmedBaseURL, model: cloudSettings.trimmedModel).note)
+                        .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("API base URL") {
+                        TextField("https://api.groq.com/openai/v1", text: $cloudSettings.baseURL)
+                            .font(.system(.body, design: .monospaced))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    LabeledContent("Model") {
+                        TextField("whisper-large-v3-turbo", text: $cloudSettings.model)
+                            .font(.system(.body, design: .monospaced))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    LabeledContent("API key") {
+                        HStack {
+                            SecureField(cloudKeyIsStored ? "Stored in Keychain" : "Paste your key", text: $cloudAPIKey)
+                                .textFieldStyle(.roundedBorder)
+                            if cloudKeyIsStored {
+                                Button("Remove", role: .destructive) { actions.removeStoredKey() }
+                            }
+                        }
+                    }
+                    Text(cloudKeyIsStored
+                         ? "A key is saved in your macOS Keychain. Leave the field blank to keep it."
+                         : "The key is saved to your macOS Keychain, never to config.toml. Local servers usually need no key.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("Recognition tuning") {
+                    LabeledContent("Language") {
+                        TextField("en", text: $cloudSettings.language)
+                            .font(.system(.body, design: .monospaced))
+                            .textFieldStyle(.roundedBorder).frame(width: 90)
+                    }
+                    LabeledContent("Vocabulary hint") {
+                        TextField("Codex, SwiftUI, AVFoundation", text: $cloudSettings.prompt)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("Listing names and jargon you say often makes the model spell them correctly.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                HStack {
+                    Button("Save Speech Settings") { actions.saveSTTSettings() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled((sttBackend == .cloud && !cloudSettings.isValid)
+                                  || (sttBackend == .parakeet && !parakeetInstalled))
+                    if sttBackend == .cloud {
+                        Button(isTestingSTT ? "Testing…" : "Test Connection") { actions.testSTTConnection() }
+                            .disabled(isTestingSTT || !cloudSettings.isValid)
+                    }
+                }
+                if let sttTestStatus {
+                    Label(sttTestStatus, systemImage: sttTestStatus.hasPrefix("Connected") ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(sttTestStatus.hasPrefix("Connected") ? .green : .orange)
+                        .font(.caption).textSelection(.enabled)
+                }
+                Label(speechHealth, systemImage: "waveform.badge.magnifyingglass")
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                if sttBackend == .cloud {
+                    Label("Utterance audio leaves this Mac and is subject to that provider's terms.", systemImage: "exclamationmark.shield")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top, 8)
     }
 
     private var general: some View {
@@ -167,11 +293,24 @@ struct MiriSettingsView: View {
 
     private var privacy: some View {
         Form {
-            Section("Local by design") {
-                Label("Microphone audio and speech inference stay on this Mac.", systemImage: "laptopcomputer.and.arrow.down")
+            Section(sttBackend.isOnDevice ? "Local by design" : "Current setup") {
+                if sttBackend == .cloud {
+                    Label("Cloud transcription is on: each utterance is uploaded to \(cloudSettings.trimmedBaseURL).", systemImage: "exclamationmark.shield.fill")
+                        .foregroundStyle(.orange)
+                    Text("Switch to on-device in the Speech tab for fully offline transcription.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Label("Microphone audio and speech inference stay on this Mac.", systemImage: "laptopcomputer.and.arrow.down")
+                    if sttBackend == .parakeet {
+                        Label("Parakeet runs in Miri itself on the Apple Neural Engine.", systemImage: "cpu")
+                    }
+                }
                 Label("Miri collects no analytics and opens no local HTTP port.", systemImage: "network.slash")
                 Label("Transcripts are not saved. Failed deliveries remain only in memory and are erased when Miri quits.", systemImage: "externaldrive.badge.xmark")
                 Label("Models are downloaded only after you approve the download.", systemImage: "arrow.down.circle")
+                if cloudKeyIsStored {
+                    Label("Your API key is stored in the macOS Keychain, not in config.toml.", systemImage: "key.fill")
+                }
             }
             Section("Review") {
                 Button("Open Configuration") { actions.openConfiguration() }

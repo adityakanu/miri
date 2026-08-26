@@ -40,6 +40,21 @@ final class NativeComponentsTests: XCTestCase {
         XCTAssertEqual(SpeechPCMPlayer.workerSampleRate, 24_000)
     }
 
+    func testSpeechPlaybackCompletionMayArriveOffMainActor() async throws {
+        let player = try await MainActor.run { try SpeechPCMPlayer() }
+        let completion = SpeechPCMPlayer.playbackCompletion(for: player)
+
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                completion(.dataPlayedBack)
+                continuation.resume()
+            }
+        }
+        // Give the callback's explicit MainActor hop a chance to execute. The
+        // regression was a process-ending executor assertion before that hop.
+        await Task.yield()
+    }
+
     func testKeyboardShortcutRoundTripsThroughConfiguration() throws {
         let value = KeyboardShortcut.optionSpace
         XCTAssertEqual(try JSONDecoder().decode(KeyboardShortcut.self, from: JSONEncoder().encode(value)), value)

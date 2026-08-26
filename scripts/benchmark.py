@@ -38,12 +38,14 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def read_events(path: Path | None) -> dict[str, list[float]]:
+def read_events(path: Path | None, start_line: int = 0) -> dict[str, list[float]]:
     samples: dict[str, list[float]] = {}
     if path is None:
         return samples
     with path.open(encoding="utf-8") as source:
         for line_number, line in enumerate(source, 1):
+            if line_number <= start_line:
+                continue
             if not line.strip():
                 continue
             record = json.loads(line)
@@ -56,17 +58,22 @@ def read_events(path: Path | None) -> dict[str, list[float]]:
     return samples
 
 
-def ps_sample(pid: int) -> tuple[float, float] | None:
-    result = subprocess.run(
-        ["/bin/ps", "-o", "%cpu=,rss=", "-p", str(pid)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    fields = result.stdout.split()
-    if result.returncode or len(fields) != 2:
-        return None
-    return float(fields[0]), float(fields[1]) / 1024.0
+def ps_sample(pids: list[int]) -> tuple[float, float] | None:
+    """Return aggregate CPU and RSS for the app and selected managed children."""
+    cpu = rss_kb = 0.0
+    measured = 0
+    for pid in pids:
+        result = subprocess.run(
+            ["/bin/ps", "-o", "%cpu=,rss=", "-p", str(pid)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        fields = result.stdout.split()
+        if result.returncode or len(fields) != 2:
+            continue
+        cpu += float(fields[0]); rss_kb += float(fields[1]); measured += 1
+    return (cpu, rss_kb / 1024.0) if measured == len(pids) else None
 
 
 def hardware() -> dict[str, str]:
@@ -137,15 +144,17 @@ def summarize(samples: dict[str, list[float]]) -> tuple[dict, dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pid", type=int, help="sample an already-running Miri process")
+    parser.add_argument("--pid", type=int, action="append", help="process to sample; repeat for app and worker")
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--events", type=Path, help="instrumentation JSONL with latency samples")
+    parser.add_argument("--events-start-line", type=int, default=0, help="ignore historical event lines through this line")
+    parser.add_argument("--base-report", type=Path, help="preserve already-captured gates missing from this phase")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--profile", choices=("responsive", "balanced", "eco"), default="responsive")
     args = parser.parse_args()
 
-    samples = read_events(args.events)
+    samples = read_events(args.events, args.events_start_line)
     if args.pid:
         deadline = time.monotonic() + args.duration
         while time.monotonic() < deadline:
@@ -158,6 +167,13 @@ def main() -> int:
             time.sleep(args.interval)
 
     summaries, gates = summarize(samples)
+    base_report = None
+    if args.base_report:
+        base_report = json.loads(args.base_report.read_text(encoding="utf-8"))
+        for metric in BUDGETS:
+            if summaries[metric].get("sample_count", 0) == 0:
+                summaries[metric] = base_report["metrics"][metric]
+                gates[metric] = base_report["gates"][metric]
     status = "incomplete" if any(g["status"] in {"missing", "insufficient"} for g in gates.values()) else (
         "pass" if all(g["status"] == "pass" for g in gates.values()) else "fail"
     )
@@ -167,7 +183,14 @@ def main() -> int:
         "revision": git_revision(),
         "profile": args.profile,
         "hardware": hardware(),
-        "measurement": {"duration_seconds": args.duration, "interval_seconds": args.interval},
+        "measurement": {
+            "duration_seconds": args.duration if args.pid else 0,
+            "interval_seconds": args.interval,
+            "pids": args.pid or [],
+            "events_start_line": args.events_start_line,
+            "base_report": str(args.base_report) if args.base_report else None,
+            "base_measurement": base_report.get("measurement") if base_report else None,
+        },
         "metrics": summaries,
         "gates": gates,
         "overall_status": status,

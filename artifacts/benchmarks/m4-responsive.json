@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-16T13:00:59.116380+00:00",
+  "revision": "d1e55b2c07a3592f36d265150d9112d5c1eb3d51",
+  "profile": "responsive",
+  "hardware": {
+    "machine": "arm64",
+    "model": "Mac16,12",
+    "chip": "Apple M4",
+    "memory_bytes": "17179869184",
+    "macos": "26.5.1"
+  },
+  "measurement": {
+    "duration_seconds": 300.0,
+    "interval_seconds": 1.0,
+    "pids": [
+      58646,
+      58655,
+      58656
+    ],
+    "events_start_line": 40
+  },
+  "metrics": {
+    "overlay_response_ms": {
+      "sample_count": 0
+    },
+    "final_transcript_ms": {
+      "sample_count": 0
+    },
+    "first_audio_ms": {
+      "sample_count": 30,
+      "mean": 131.193,
+      "max": 259.856,
+      "p95": 251.258
+    },
+    "idle_cpu_percent": {
+      "sample_count": 293,
+      "mean": 0.077,
+      "max": 2.8,
+      "p95": 0.3
+    },
+    "warm_rss_mb": {
+      "sample_count": 293,
+      "mean": 108.969,
+      "max": 117.547,
+      "p95": 112.0
+    },
+    "cold_start_ms": {
+      "sample_count": 0
+    },
+    "wake_word_idle_cpu_percent": {
+      "sample_count": 0
+    }
+  },
+  "gates": {
+    "overlay_response_ms": {
+      "status": "missing",
+      "rule": "max_p95",
+      "limit": 100.0
+    },
+    "final_transcript_ms": {
+      "status": "missing",
+      "rule": "max_p95",
+      "limit": 1000.0
+    },
+    "first_audio_ms": {
+      "status": "pass",
+      "rule": "max_p95",
+      "limit": 500.0,
+      "measured": 251.258
+    },
+    "idle_cpu_percent": {
+      "status": "pass",
+      "rule": "max_mean",
+      "limit": 1.0,
+      "measured": 0.077
+    },
+    "warm_rss_mb": {
+      "status": "pass",
+      "rule": "max_max",
+      "limit": 1280.0,
+      "measured": 117.547
+    }
+  },
+  "overall_status": "incomplete",
+  "notes": "Missing or insufficient samples make this report incomplete; they never count as passing."
+}

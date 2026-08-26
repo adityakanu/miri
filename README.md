@@ -56,7 +56,7 @@ git clone https://github.com/adityakanu/miri.git
 cd miri
 make bootstrap
 make models-dev
-swift run Miri
+swift run miri-app
 ```
 
 Requires Apple Silicon, macOS 14+, Xcode, Homebrew, and `uv`.

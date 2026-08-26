@@ -10,7 +10,7 @@ brew install xcodegen uv
 git clone https://github.com/adityakanu/miri.git
 cd miri
 make bootstrap test
-swift run Miri
+swift run miri-app
 ```
 
 The development process uses `Worker/.venv`. A release DMG instead contains a

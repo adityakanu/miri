@@ -184,10 +184,27 @@ public final class SpeechPCMPlayer {
             try engine.start()
         }
         queuedBufferCount += 1
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.bufferDidPlay() }
-        }
+        // AVAudioPlayerNode invokes this callback on its private completion
+        // queue. Build it from a nonisolated context so Swift does not attach
+        // MainActor isolation to the callback and trap before the hop below.
+        player.scheduleBuffer(
+            buffer,
+            completionCallbackType: .dataPlayedBack,
+            completionHandler: Self.playbackCompletion(for: self)
+        )
         if !player.isPlaying { player.play() }
+    }
+
+    // Internal so the executor-hop regression can be exercised without
+    // requiring a physical audio output device in the test process.
+    nonisolated static func playbackCompletion(
+        for owner: SpeechPCMPlayer
+    ) -> @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void {
+        { [weak owner] _ in
+            Task { @MainActor [weak owner] in
+                owner?.bufferDidPlay()
+            }
+        }
     }
 
     public func enqueuePCMBytes(_ data: Data) throws {
