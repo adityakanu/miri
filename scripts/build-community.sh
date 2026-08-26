@@ -26,7 +26,7 @@ xcodegen generate
 swift build -c release --product miri
 swift build -c release --product miri-mcp
 xcodebuild -project Miri.xcodeproj -scheme MiriApp -configuration Release \
-  -derivedDataPath "$STAGE/DerivedData" CODE_SIGNING_ALLOWED=NO build
+  -derivedDataPath "$STAGE/DerivedData" CODE_SIGNING_ALLOWED=NO ARCHS=arm64 build
 
 APP_SOURCE="$STAGE/DerivedData/Build/Products/Release/Miri.app"
 APP="$STAGE/Miri.app"
@@ -41,6 +41,7 @@ install -m 0755 "$ROOT/.build/release/miri-mcp" "$APP/Contents/Helpers/miri-mcp"
 # on first use after the user consents.
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
+cp "$ROOT/THIRD-PARTY-NOTICES.md" "$APP/Contents/Resources/THIRD-PARTY-NOTICES.md"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 # Adding the CLI helpers invalidates Xcode's initial signature.

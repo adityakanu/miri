@@ -35,9 +35,9 @@ final class NativeComponentsTests: XCTestCase {
         XCTAssertEqual(reduced.accessibilityLabel, "Listening for Codex - Miri")
     }
 
-    func testWorkerAudioFormatsAreStable() {
-        XCTAssertEqual(MicrophoneCapture.workerSampleRate, 16_000)
-        XCTAssertEqual(SpeechPCMPlayer.workerSampleRate, 24_000)
+    func testSpeechAudioFormatsAreStable() {
+        XCTAssertEqual(MicrophoneCapture.modelSampleRate, 16_000)
+        XCTAssertEqual(SpeechPCMPlayer.modelSampleRate, 24_000)
     }
 
     func testSpeechPlaybackCompletionMayArriveOffMainActor() async throws {

@@ -1,7 +1,7 @@
 import Foundation
 import FluidAudio
 
-public enum ParakeetError: LocalizedError {
+public enum ParakeetError: LocalizedError, Equatable {
     case modelsMissing
     case notLoaded
 

@@ -33,7 +33,7 @@ public final class MicrophoneCapture: @unchecked Sendable {
     public typealias ChunkHandler = @Sendable (AudioPCMChunk) -> Void
     public typealias ErrorHandler = @Sendable (Error) -> Void
 
-    public nonisolated static let workerSampleRate = 16_000.0
+    public nonisolated static let modelSampleRate = 16_000.0
 
     private let engine: AVAudioEngine
     private let lock = NSLock()
@@ -63,7 +63,7 @@ public final class MicrophoneCapture: @unchecked Sendable {
         }
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.workerSampleRate,
+            sampleRate: Self.modelSampleRate,
             channels: 1,
             interleaved: false
         ), let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
@@ -136,10 +136,10 @@ public final class MicrophoneCapture: @unchecked Sendable {
     }
 }
 
-/// Queues worker-produced 24 kHz mono Float32 PCM. AVAudioEngine resamples it for the output device.
+/// Queues model-produced 24 kHz mono Float32 PCM. AVAudioEngine resamples it for the output device.
 @MainActor
 public final class SpeechPCMPlayer {
-    public nonisolated static let workerSampleRate = 24_000.0
+    public nonisolated static let modelSampleRate = 24_000.0
 
     private let engine: AVAudioEngine
     private let player: AVAudioPlayerNode
@@ -153,7 +153,7 @@ public final class SpeechPCMPlayer {
         player = AVAudioPlayerNode()
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.workerSampleRate,
+            sampleRate: Self.modelSampleRate,
             channels: 1,
             interleaved: false
         ) else { throw AudioIOError.invalidPCM }

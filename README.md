@@ -22,6 +22,12 @@ speak a prompt, and Miri routes the local transcript to the exact agent session
 you selected. Agents can send short spoken progress, blocker, approval, and
 completion updates back through Miri.
 
+<p align="center">
+  <a href="https://github.com/FluidInference/FluidAudio">
+    <img src="https://assets.inference.plus/fi-badge.png" alt="Powered by Fluid Inference" height="64">
+  </a>
+</p>
+
 > [!CAUTION]
 > Miri currently uses a free ad-hoc signature and requires a
 > one-time macOS **Open Anyway** action. Use them only when downloaded from
@@ -55,11 +61,12 @@ For contributors and developers:
 git clone https://github.com/adityakanu/miri.git
 cd miri
 make bootstrap
-make models-dev
 swift run miri-app
 ```
 
-Requires Apple Silicon, macOS 14+, Xcode, Homebrew, and `uv`.
+Requires Apple Silicon, macOS 14+, Xcode, and Homebrew. Speech models download
+after explicit consent on first use; no Python runtime or separate worker is
+needed.
 
 ## How it works
 
@@ -68,8 +75,11 @@ Requires Apple Silicon, macOS 14+, Xcode, Homebrew, and `uv`.
 | Hold your global shortcut and speak. | Miri snapshots the active, default, or dedicated-hotkey target. | Get concise, filtered spoken agent updates. |
 | Release to transcribe locally. | Never guesses from the frontmost terminal. | Interrupt speech by starting a new recording. |
 
-- **Local speech:** Moonshine Streaming, Pocket TTS, Silero VAD, and optional
-  experimental openWakeWord run behind replaceable provider interfaces.
+- **Local speech:** NVIDIA Parakeet TDT v3 transcription and PocketTTS speech
+  synthesis run through FluidAudio/CoreML on the Apple Neural Engine, inside
+  Miri's own process.
+- **Optional cloud STT:** connect Groq, OpenAI, OpenRouter, a local server, or
+  any OpenAI-compatible `/audio/transcriptions` endpoint from Settings.
 - **Explicit agents:** Codex, Claude Code, Hermes, generic local commands, and
   a safe Clipboard fallback.
 - **No focus stealing:** a compact notch-adjacent status pill stays out of your
@@ -134,16 +144,17 @@ adapter = "clipboard"
 | Hermes | Local API-server URL and exact session ID. |
 | Generic command | Local executable path; transcript goes to stdin. |
 
-The default model manifest checksum-pins Moonshine Small Streaming artifacts.
-Speech weights download only after first-run consent and are stored under
-Miri's Application Support directory; they are not embedded in the DMG.
+FluidAudio downloads the Parakeet and PocketTTS CoreML weights only after
+first-run consent and stores them under Application Support. Model weights are
+not embedded in the DMG. The application itself is about 22 MB.
 
 ## Privacy
 
 Miri is local-first:
 
 - No analytics and no local HTTP server.
-- Audio stays on your Mac.
+- Audio stays on your Mac with the default Parakeet backend; cloud
+  transcription is explicit and opt-in.
 - No persistent transcript history.
 - Failed deliveries stay only in memory and disappear when Miri quits.
 - Logs omit raw audio and full transcripts by default.
@@ -157,11 +168,11 @@ to the process you explicitly choose.
 | Area | Status |
 | --- | --- |
 | Menu-bar app, hotkeys, overlay, routing, outbox | Implemented |
-| Local worker, streamed STT/TTS contract, VAD/wake-word paths | Implemented |
+| In-process Parakeet STT and PocketTTS on CoreML/ANE | Implemented |
 | Codex exact-thread targeting, speech, questions, and approvals | Implemented |
 | Claude Code and Hermes live compatibility matrix | In validation |
 | Signed/notarized DMG and official Homebrew Cask | Planned |
-| Pinned production model manifest | Implemented |
+| Optional OpenAI-compatible cloud transcription | Implemented |
 
 The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 
@@ -174,6 +185,23 @@ The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 - [Model and runtime licenses](docs/model-licenses.md)
 - [Benchmark protocol](docs/benchmarks.md)
 - [Competitive landscape](docs/competitive-landscape.md)
+
+## Acknowledgments
+
+Miri's local speech stack is powered by
+[FluidAudio](https://github.com/FluidInference/FluidAudio), an Apache-2.0 Swift
+framework from the FluidInference Team. Miri uses FluidAudio's CoreML model
+management, Parakeet TDT v3 ASR, PocketTTS streaming synthesis, and Apple Neural
+Engine execution. This is the foundation that lets Miri ship without Python
+and keep microphone audio in-process and on-device.
+
+Parakeet TDT v3 was created by NVIDIA and converted to CoreML by
+FluidInference. PocketTTS was created by Kyutai and converted to CoreML by
+FluidInference. Model downloads remain subject to their CC-BY-4.0 terms.
+
+See [Third-party notices](THIRD-PARTY-NOTICES.md) and the
+[model/runtime license inventory](docs/model-licenses.md) for complete source,
+license, and attribution links.
 
 ## Contributing
 

@@ -178,8 +178,16 @@ struct MiriSettingsView: View {
             Section("Interaction") {
                 LabeledContent("Push-to-talk shortcut") {
                     HStack {
-                        TextField("option+space", text: $activeHotkey)
-                            .font(.system(.body, design: .monospaced)).frame(width: 180)
+                        // A placeholder identical to the current value was
+                        // painted behind the editor by AppKit when this row was
+                        // compressed, making option+space appear twice. Keep
+                        // the placeholder semantic and force a single line.
+                        TextField("Shortcut", text: $activeHotkey)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .lineLimit(1)
+                            .frame(width: 160)
+                            .fixedSize(horizontal: true, vertical: false)
                             .onSubmit { actions.saveActiveHotkey() }
                         Button("Save") { actions.saveActiveHotkey() }
                     }
@@ -400,8 +408,12 @@ struct MiriOnboardingView: View {
                     .onChange(of: inputMode) { _, value in actions.setInputMode(value) }
                 LabeledContent("Shortcut") {
                     HStack {
-                        TextField("option+space", text: $hotkey)
-                            .font(.system(.body, design: .monospaced)).frame(width: 180)
+                        TextField("Shortcut", text: $hotkey)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .lineLimit(1)
+                            .frame(width: 160)
+                            .fixedSize(horizontal: true, vertical: false)
                         Button("Save") { actions.saveActiveHotkey() }
                     }
                 }

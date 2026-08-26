@@ -24,3 +24,8 @@ Upstream references: [FluidAudio](https://github.com/FluidInference/FluidAudio),
 [Pocket TTS](https://github.com/kyutai-labs/pocket-tts),
 [Pocket TTS model card](https://huggingface.co/kyutai/pocket-tts), and
 [Pocket voice catalog](https://huggingface.co/kyutai/tts-voices).
+
+The release bundle also includes
+[`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md), with attribution to the
+FluidInference Team, NVIDIA, and Kyutai plus the relevant source and license
+links.

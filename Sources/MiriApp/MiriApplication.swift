@@ -613,7 +613,7 @@ private struct PendingAgentInteraction: Sendable {
                 return
             }
         }
-        let sender = audioSenderTask; audioSenderTask = nil
+        audioSenderTask = nil
         Task {
             do {
                 let text = try await parakeet.finish()
@@ -724,7 +724,6 @@ private struct PendingAgentInteraction: Sendable {
         wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
         hotkeyIsHeld = false; listeningAttemptID = nil
-        let recording = recordingSessionID; let wake = wakeSessionID
         recordingSessionID = nil; recordingSnapshot = nil; speechSessionID = nil; wakeSessionID = nil
         Task { [synth] in await synth.stop() }
         logger.log(.error, "interaction failed: \(error.localizedDescription)")

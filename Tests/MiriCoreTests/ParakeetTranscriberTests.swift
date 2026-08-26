@@ -70,12 +70,3 @@ final class ParakeetTranscriberTests: XCTestCase {
         XCTAssertLessThan(elapsed, 40, "concurrent loads appear to have duplicated model compilation")
     }
 }
-
-extension ParakeetError: @retroactive Equatable {
-    public static func == (lhs: ParakeetError, rhs: ParakeetError) -> Bool {
-        switch (lhs, rhs) {
-        case (.modelsMissing, .modelsMissing), (.notLoaded, .notLoaded): true
-        default: false
-        }
-    }
-}
