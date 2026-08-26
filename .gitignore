@@ -13,3 +13,5 @@ dist/
 build/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
+*.swp
+*.swo
