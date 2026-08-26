@@ -11,7 +11,8 @@ its unit tests pass and it participates in at least one integration test.
 - `MiriNative`: AppKit/AVFoundation components: audio, hotkeys, overlay, devices,
   and permissions. These components do not select agent targets.
 - `MiriApp`: composition root and user-facing menu/settings/onboarding.
-- `miri-worker`: replaceable speech inference process. It owns STT/TTS/VAD and
+- speech engines (`ParakeetTranscriber`, `FluidSpeechSynthesizer`): in-process
+  CoreML inference via FluidAudio. They own STT/TTS and
   wake-word providers, but never routes agent messages or plays audio.
 - `miri` and `miri-mcp`: clients of the private control socket. No HTTP listener.
 

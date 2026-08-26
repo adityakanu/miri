@@ -3,18 +3,15 @@
 ## Development build
 
 Requirements are Apple Silicon, macOS 14 or newer, Xcode/Swift 6, XcodeGen,
-and `uv`:
 
 ```sh
-brew install xcodegen uv
 git clone https://github.com/adityakanu/miri.git
 cd miri
 make bootstrap test
 swift run miri-app
 ```
 
-The development process uses `Worker/.venv`. A release DMG instead contains a
-checksum-pinned standalone Python runtime and does not require Python or `uv` on
+A release DMG contains a
 the user's machine.
 
 ## Community DMG

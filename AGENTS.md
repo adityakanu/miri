@@ -10,16 +10,19 @@ release blockers below pass.
 
 The product scope and architecture are documented in `scope.md`,
 `docs/implementation-plan.md`, and `docs/release-checklist.md`. Treat those as
-the source of truth. Keep Swift responsible for product behavior and Python
-limited to replaceable speech inference behind the versioned IPC contract.
+the source of truth. Speech inference is now Swift + CoreML via FluidAudio;
+there is no Python in the product.
 
 ## Current implementation
 
 - Native SwiftUI/AppKit menu-bar accessory app with a non-activating,
   notch-aware status overlay and configurable hold-to-talk hotkey.
 - AVFoundation microphone capture and PCM playback.
-- Self-supervised Python worker with Moonshine STT, Pocket TTS, Silero VAD, and
-  experimental openWakeWord provider boundaries.
+- All speech runs on CoreML in-process via FluidAudio (Apache-2.0): NVIDIA
+  Parakeet TDT for transcription, PocketTTS for speech output, both on the
+  Apple Neural Engine. There is no Python runtime and no worker subprocess.
+- Optional opt-in cloud transcription against any OpenAI-compatible endpoint,
+  with the API key stored in the macOS Keychain.
 - Agent-neutral routing contracts with Clipboard, generic command, Codex,
   Claude Code, and Hermes adapters.
 - Codex is the live-validated path. Miri snapshots the exact agent/thread target
@@ -29,9 +32,9 @@ limited to replaceable speech inference behind the versioned IPC contract.
   supported through the neutral interaction contract.
 - Private local socket only; no HTTP listener, analytics, or persistent
   transcript history. Failed delivery uses a memory-only outbox.
-- Community release embeds Python and inference packages. Model weights are not
-  embedded in the DMG; the user downloads them with explicit consent and pinned
-  manifest/checksum handling.
+- The app bundle is ~22 MB and arm64-only. No inference runtime or model
+  weights are embedded; Parakeet and PocketTTS models are downloaded on first
+  use after explicit consent.
 
 ## Critical crash fixed on 2026-07-18
 
@@ -54,27 +57,27 @@ Regression coverage is in
 `Tests/MiriCoreTests/NativeComponentsTests.swift` as
 `testSpeechPlaybackCompletionMayArriveOffMainActor`.
 
-A second packaging defect was also fixed in `scripts/miri-worker-launcher`:
-`PYTHONDONTWRITEBYTECODE=1` prevents Python from creating `__pycache__` files
-inside the signed app and invalidating the bundle seal after first use.
+A second packaging defect in the Python worker launcher (`__pycache__` writes
+invalidating the signed bundle) is now moot: the worker and its launcher were
+removed when speech moved to CoreML.
 
 ## Verified state
 
 The corrected self-contained artifacts were rebuilt on 2026-07-18:
 
-- `dist/Miri-0.1.4.dmg` (approximately 965 MB)
-- `dist/Miri-0.1.4.zip` (approximately 656 MB)
+- `dist/Miri-0.1.4.dmg` and `.zip` (the pre-pivot artifacts were ~965 MB and
+  ~656 MB; after removing Python the Release app is ~22 MB, so these must be
+  rebuilt and re-measured)
 - `dist/Miri-0.1.4.sha256`
 - staged application: `.preview/Miri.app`
 
 Completed checks:
 
 - `swift test`: 47 tests pass.
-- `uv run --project Worker pytest -q`: 45 tests pass.
 - The new off-main-actor playback regression test passes.
 - `codesign --verify --deep --strict .preview/Miri.app` passes.
-- The bundle signature remains valid after importing the bundled worker,
-  Moonshine, and Pocket TTS with bytecode writes disabled.
+- The bundle signature remains valid after first run; nothing writes into the
+  app bundle.
 - Both DMG and ZIP match `dist/Miri-0.1.4.sha256`.
 - `hdiutil verify dist/Miri-0.1.4.dmg` passes.
 - The staged bundle reports version `0.1.4`.
@@ -84,7 +87,6 @@ Useful verification commands:
 
 ```sh
 swift test
-uv run --project Worker pytest -q
 (cd dist && shasum -a 256 -c Miri-0.1.4.sha256)
 codesign --verify --deep --strict .preview/Miri.app
 hdiutil verify dist/Miri-0.1.4.dmg
@@ -141,15 +143,15 @@ it needs Accessibility permission and does not replace human speech evidence.
    rapid hotkey re-entry, with no new crash report.
 2. Collect 30 human overlay and final-transcript samples and produce a complete
    passing M4 benchmark report.
-3. Test installation on a fresh macOS user/machine without Xcode, Python, or
-   `uv`; verify model consent/download, offline use after download, Codex MCP
-   setup, and STT → agent → TTS.
+3. Test installation on a fresh macOS user/machine without Xcode; verify model
+   consent/download, offline use after download, Codex MCP setup, and
+   STT → agent → TTS.
 4. Exercise microphone permission denial/recovery, Bluetooth input/output, and
    at least the primary accessibility path (Reduce Motion and VoiceOver labels).
 5. Live-test Claude Code and Hermes, or clearly label them experimental and
    Codex as the only validated adapter for `0.1.4`.
-6. Review model/runtime licenses, manifest/checksums, bundled notices, generated
-   SBOM, and standalone Python provenance/hash.
+6. Review model/runtime licenses (FluidAudio Apache-2.0, Parakeet CC-BY-4.0),
+   bundled notices, and the generated SBOM.
 7. Commit and push all intended changes. Then rebuild from that exact commit and
    verify version, signature, DMG layout, checksums, and clean installation.
 8. Only after the gates pass, create `v0.1.4`, publish one GitHub Release, and
@@ -160,14 +162,15 @@ it needs Accessibility permission and does not replace human speech evidence.
 
 - Free community artifacts are ad-hoc signed, not Developer-ID notarized, so
   users need the Gatekeeper **Open Anyway** flow.
-- M4 is the validated platform. M1 remains best-effort until physical testing is
-  recorded.
+- Apple Silicon only: the Neural Engine does not exist on Intel Macs. M4 is the
+  validated platform; M1 remains best-effort until physical testing is recorded.
 - Codex has the deepest live validation. Claude Code and Hermes do not yet have
   the same compatibility evidence.
 - English-first speech; no custom vocabulary, multilingual catalog, spoken
   correction, mobile/remote relay, worktree/diff dashboard, or broad provider
   picker yet.
-- Wake word is experimental; push-to-talk is the release path.
+- Wake word is unavailable: it lived in the removed Python worker. Push-to-talk
+  is the supported input mode.
 
 ## Working tree warning
 
@@ -177,7 +180,6 @@ do not reset, clean, or overwrite unrelated changes. At handoff it includes:
 - SwiftPM product collision fix: development app is `swift run miri-app`, while
   `miri` remains the CLI. XcodeGen still packages `Miri.app`.
 - Playback crash fix and regression test.
-- Immutable Python worker-launcher fix.
 - Benchmark harness/report/documentation changes.
 - Competitor analysis updates.
 - Generated benchmark artifacts and synthetic benchmark helper.
