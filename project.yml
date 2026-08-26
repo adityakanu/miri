@@ -3,6 +3,13 @@ options:
   bundleIdPrefix: dev.miri
   deploymentTarget:
     macOS: "14.0"
+# Speech runs on the Apple Neural Engine, which only exists on Apple Silicon.
+# This must be project-wide so SwiftPM dependencies build arm64-only too.
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+    VALID_ARCHS: arm64
 packages:
   Miri:
     path: .
@@ -21,6 +28,10 @@ targets:
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/Miri.entitlements
         GENERATE_INFOPLIST_FILE: NO
+        # Speech runs on the Apple Neural Engine, which only exists on Apple
+        # Silicon, so Miri is an arm64-only application.
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: NO
 schemes:
   MiriApp:
     build:

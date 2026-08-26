@@ -9,19 +9,12 @@ profile = "responsive"
 active_target = "option+space"
 
 [stt]
-# "parakeet" runs NVIDIA Parakeet TDT on the Apple Neural Engine, in Miri's own
-# process: no Python worker, no network. Recommended. Choose it in
-# Settings > Speech, which also downloads the model after asking.
+# "parakeet" runs NVIDIA Parakeet TDT on the Apple Neural Engine, inside Miri
+# itself. No Python, no network. This is the default.
 provider = "parakeet"
 
-# "moonshine" is the older embedded-Python path.
-# provider = "moonshine"
-# model_path = "~/Library/Application Support/Miri/Models/moonshine"
-# model_arch = 4 # Moonshine Small Streaming
-
 # Cloud transcription is opt-in and configured in Settings > Speech, which also
-# stores the API key in your Keychain. These keys are written by the app; the
-# key itself is never stored here.
+# stores the API key in your Keychain. The key is never stored here.
 # provider = "cloud"
 # cloud_base_url = "https://api.groq.com/openai/v1"
 # cloud_model = "whisper-large-v3-turbo"
@@ -39,23 +32,16 @@ threshold = 0.5
 minimum_silence_ms = 500
 
 [tts]
+# PocketTTS on CoreML, in-process. Voice models download on first use.
 provider = "pocket-tts"
 voice = "alba"
 speak_agent_responses = true
 agent_response_max_characters = 180
 
+# Wake word is unavailable in this build: it ran inside the removed Python
+# worker. Push to talk is the supported input mode.
 [wakeword]
 enabled = false
-provider = "openwakeword"
-model_path = "~/Library/Application Support/Miri/Models/wakeword.onnx"
-threshold = 0.55
-utterance_timeout_seconds = 20
-
-# Stable release builds provide this manifest inside Miri.app. Development can
-# point to a locally reviewed manifest containing exact URLs, sizes, and SHA-256.
-# [models]
-# manifest_path = "/path/to/model-manifest.json"
-# directory = "~/Library/Application Support/Miri/Models"
 
 [[targets]]
 id = "clipboard"

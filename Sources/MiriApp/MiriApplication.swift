@@ -58,10 +58,10 @@ private struct PendingAgentInteraction: Sendable {
     @Published var activeHotkey = "option+space"
     @Published var agentSpeechMuted = false
     @Published var outboxEntries: [OutboxEntry] = []
-    @Published var speechHealth = "Speech worker starting"
+    @Published var speechHealth = "Speech models starting"
     @Published var pendingAgentPrompt: String?
     @Published var codexIntegrationStatus = "Checking Codex integration…"
-    @Published var sttBackend: STTBackend = .local
+    @Published var sttBackend: STTBackend = .parakeet
     @Published var cloudSettings = STTCloudSettings()
     @Published var cloudAPIKey = ""
     @Published var cloudKeyIsStored = SecretStore.hasSecret()
@@ -72,8 +72,8 @@ private struct PendingAgentInteraction: Sendable {
     private var machine = InteractionMachine()
     private let policy = StatusPolicy()
     private let configurationStore = ConfigurationStore()
-    private let worker = WorkerClient()
     private let parakeet = ParakeetTranscriber()
+    private let synth = FluidSpeechSynthesizer()
     private let capture = MicrophoneCapture()
     private let recordingBuffer = RecordingBuffer()
     private let audioPipe = AudioChunkPipe()
@@ -110,8 +110,6 @@ private struct PendingAgentInteraction: Sendable {
     private var wakeSessionID: String?
     private var wakeUtterance = false
     private var wakeTimeoutTask: Task<Void, Never>?
-    private var workerEventTask: Task<Void, Never>?
-    private var lastWorkerEnvironment: [String: String]?
     private var hotkeyPressedAt: Date?
     private var recordingReleasedAt: Date?
     private var speechRequestedAt: Date?
@@ -163,44 +161,8 @@ private struct PendingAgentInteraction: Sendable {
             }
         } catch { lastStatus = error.localizedDescription; logger.log(.error, "setup failed: \(error.localizedDescription)") }
         showOnboardingIfNeeded()
-        await startWorker()
     }
 
-    private func startWorker() async {
-        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let bundled = Bundle.main.bundleURL.appending(path: "Contents/Helpers/miri-worker")
-        let development = root.appending(path: "Worker/.venv/bin/miri-worker")
-        let executable = FileManager.default.isExecutableFile(atPath: bundled.path) ? bundled : development
-        let workerDirectory = executable == bundled ? Bundle.main.resourceURL : root.appending(path: "Worker")
-        if FileManager.default.isExecutableFile(atPath: executable.path) {
-            do {
-                let environment = workerEnvironment()
-                try await worker.start(executable: executable, workingDirectory: workerDirectory, environment: environment)
-                lastWorkerEnvironment = environment
-                workerEventTask?.cancel()
-                workerEventTask = Task { [weak self] in guard let self else { return }; for await frame in worker.events() { await self.handleWorkerFrame(frame) } }
-                _ = try await worker.sendJSON(.hello, body: ["peer": "Miri.app"])
-                _ = try await worker.sendJSON(.health, body: EmptyBody())
-                _ = try await worker.sendJSON(.modelStatus, body: EmptyBody())
-                logger.log("speech worker started")
-                // Only the first start is a cold start. Restarts happen minutes
-                // into a session and would otherwise record the elapsed session
-                // time as a launch metric.
-                if !didRecordColdStart {
-                    didRecordColdStart = true
-                    performance.record("cold_start_ms", milliseconds: Date().timeIntervalSince(launchStartedAt) * 1_000)
-                }
-                if inputMode == .wakeWord { await startWakeMonitoring() }
-            } catch { lastStatus = "Worker unavailable: \(error.localizedDescription)"; logger.log(.error, lastStatus) }
-        } else { lastStatus = "Worker missing. Run make bootstrap."; logger.log(.error, lastStatus) }
-    }
-
-    private func restartWorker() async {
-        await stopWakeMonitoring(); capture.stop(); audioPipe.finish()
-        workerEventTask?.cancel(); workerEventTask = nil
-        await worker.stop(); speechHealth = "Restarting speech worker…"
-        await startWorker()
-    }
 
     private func apply(_ configuration: MiriConfiguration) {
         let previousDefault = currentConfiguration.defaultTarget
@@ -216,7 +178,7 @@ private struct PendingAgentInteraction: Sendable {
         configureHotkeys(for: configuration.targets.filter(\.enabled))
         if case .string(let profile)? = configuration.sections["audio"]?["profile"] { modelProfile = ModelLifecycleProfile(rawValue: profile) ?? .responsive }
         if case .string(let provider)? = configuration.sections["stt"]?["provider"] { sttBackend = STTBackend(configurationValue: provider) }
-        else { sttBackend = .local }
+        else { sttBackend = .parakeet }
         if sttBackend == .parakeet {
             Task { [weak self] in await self?.loadParakeetIfInstalled() }
         }
@@ -240,9 +202,6 @@ private struct PendingAgentInteraction: Sendable {
         }
         router = TargetRouter(registry: .init(targets: configuration.targets), defaultTargetID: configuration.defaultTarget)
         reconfigureAdapters(configuration.targets.filter(\.enabled))
-        if let lastWorkerEnvironment, lastWorkerEnvironment != workerEnvironment() {
-            Task { await restartWorker() }
-        }
     }
 
     private func reconfigureAdapters(_ enabledTargets: [TargetDefinition]) {
@@ -367,54 +326,6 @@ private struct PendingAgentInteraction: Sendable {
         }
     }
 
-    private func workerEnvironment() -> [String: String] {
-        func string(_ section: String, _ key: String) -> String? { if case .string(let value)? = currentConfiguration.sections[section]?[key] { return value }; return nil }
-        func bool(_ section: String, _ key: String) -> Bool? { if case .boolean(let value)? = currentConfiguration.sections[section]?[key] { return value }; return nil }
-        func number(_ section: String, _ key: String) -> Double? {
-            switch currentConfiguration.sections[section]?[key] { case .number(let value)?: return value; case .integer(let value)?: return Double(value); default: return nil }
-        }
-        var environment: [String: String] = [:]
-        environment["MIRI_PROFILE"] = modelProfile.rawValue
-        if let value = string("stt", "provider") { environment["MIRI_STT_PROVIDER"] = value }
-        if let value = string("tts", "provider") { environment["MIRI_TTS_PROVIDER"] = value }
-        if let value = string("vad", "provider") { environment["MIRI_VAD_PROVIDER"] = value }
-        if let value = string("wakeword", "provider") { environment["MIRI_WAKE_WORD_PROVIDER"] = value }
-        if let value = string("stt", "model_path") { environment["MIRI_PROVIDER_MOONSHINE_MODEL_PATH"] = expand(value) }
-        for key in ["base_url", "model", "api_key_env", "language", "prompt", "timeout"] {
-            if let value = string("stt", "cloud_\(key)") { environment["MIRI_PROVIDER_CLOUD_STT_\(key.uppercased())"] = value }
-        }
-        // GUI launches do not inherit the login shell, so the Keychain is the
-        // primary source and an exported variable is only a fallback. The secret
-        // is passed to the worker child process and never written to config.toml.
-        environment["MIRI_PROVIDER_CLOUD_STT_API_KEY_ENV"] = "MIRI_CLOUD_STT_KEY"
-        if let secret = SecretStore.read() ?? ProcessInfo.processInfo.environment["GROQ_API_KEY"] {
-            environment["MIRI_CLOUD_STT_KEY"] = secret
-        }
-        if case .integer(let value)? = currentConfiguration.sections["stt"]?["model_arch"] { environment["MIRI_PROVIDER_MOONSHINE_MODEL_ARCH"] = String(value) }
-        if let value = string("tts", "config_path") { environment["MIRI_PROVIDER_POCKET_TTS_CONFIG_PATH"] = expand(value) }
-        if let value = string("tts", "language") { environment["MIRI_PROVIDER_POCKET_TTS_LANGUAGE"] = value }
-        if let value = string("tts", "voice_path") ?? string("tts", "voice") { environment["MIRI_PROVIDER_POCKET_TTS_VOICE"] = expand(value) }
-        if bool("tts", "allow_model_downloads") == true { environment["MIRI_PROVIDER_ALLOW_MODEL_DOWNLOADS"] = "true" }
-        if let value = string("wakeword", "model_path") { environment["MIRI_PROVIDER_OPENWAKEWORD_MODEL_PATHS"] = expand(value) }
-        if let value = number("vad", "threshold") { environment["MIRI_PROVIDER_SILERO_THRESHOLD"] = String(value) }
-        if let value = number("wakeword", "threshold") { environment["MIRI_PROVIDER_OPENWAKEWORD_THRESHOLD"] = String(value) }
-        if let value = string("models", "manifest_path") { environment["MIRI_MODEL_MANIFEST"] = expand(value) }
-        else if let bundledManifest = Bundle.main.resourceURL?.appending(path: "model-manifest.json"), FileManager.default.fileExists(atPath: bundledManifest.path) {
-            environment["MIRI_MODEL_MANIFEST"] = bundledManifest.path
-        } else {
-            let developmentManifest = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appending(path: "Worker/models/model-manifest.json")
-            if FileManager.default.fileExists(atPath: developmentManifest.path) {
-                environment["MIRI_MODEL_MANIFEST"] = developmentManifest.path
-            }
-        }
-        if let value = string("models", "directory") { environment["MIRI_MODELS_DIRECTORY"] = expand(value) }
-        else { environment["MIRI_MODELS_DIRECTORY"] = MiriPaths.modelsDirectory.path }
-        // Pocket TTS uses Hugging Face's cache internally. Keep that cache within
-        // Miri's removable Application Support model directory rather than ~/.cache.
-        environment["HF_HOME"] = MiriPaths.modelsDirectory.appending(path: "huggingface").path
-        return environment
-    }
 
     /// True when transcription runs in-process on the ANE, so the Python
     /// worker is not involved in the recording path at all.
@@ -629,18 +540,13 @@ private struct PendingAgentInteraction: Sendable {
         }
         if state == .speaking {
             synthesizer.stopSpeaking(at: .immediate)
-            if let session = speechSessionID { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) }
+            await synth.stop()
             pcmPlayer?.stop(); speechSessionID = nil; speechInterruptible = true
         }
-        let workerState = await worker.state
-        guard usesParakeet || workerState == .running else {
-            let diagnostic = await worker.diagnostic
-            let message: String
-            switch workerState {
-            case .starting: message = "Speech models are still warming up"
-            case .failed(let reason): message = diagnostic ?? reason
-            default: message = "Speech worker is not running. Run make models-dev, then restart Miri."
-            }
+        if usesParakeet, await !parakeet.isLoaded {
+            let message = ParakeetTranscriber.isInstalled
+                ? "Speech model is still loading"
+                : "Download the on-device speech model in Settings > Speech."
             lastStatus = message; presentOverlay(.error(message: message)); dismissOverlay(after: 2); return
         }
         microphonePermission = await MicrophonePermissions.request()
@@ -660,43 +566,18 @@ private struct PendingAgentInteraction: Sendable {
         let session = UUID().uuidString; recordingSessionID = session; wakeUtterance = triggeredByWakeWord
         recordingBuffer.reset()
         do {
-            if usesParakeet {
-                try await parakeet.startStream()
-            } else {
-                _ = try await worker.sendJSON(
-                    .audioStart,
-                    body: AudioStartBody(vadEndpointing: triggeredByWakeWord, minimumSilenceMilliseconds: vadMinimumSilenceMilliseconds),
-                    sessionID: session
-                )
-            }
+            if usesParakeet { try await parakeet.startStream() }
             if requiresHeldHotkey, (!hotkeyIsHeld || listeningAttemptID != attemptID) {
-                if usesParakeet { await parakeet.cancel() }
-                else { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) }
+                await parakeet.cancel()
                 recordingSessionID = nil; recordingSnapshot = nil
                 return
             }
-            if usesParakeet {
-                // Samples go straight to the on-device model: no IPC, no
-                // subprocess, nothing leaves this process.
-                try capture.start { [recordingBuffer, parakeet] chunk in
-                    recordingBuffer.append(chunk.samples.withUnsafeBytes { Data($0) })
-                    Task { await parakeet.accept(chunk.samples) }
-                } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
-            } else {
-                let stream = audioPipe.open()
-                audioSenderTask = Task { [worker] in
-                    do {
-                        for await data in stream {
-                            _ = try await worker.send(messageType: .audioChunk, sessionID: session, payload: data, kind: .pcmFloat32)
-                        }
-                    } catch { await MainActor.run { self.fail(error) } }
-                }
-                try capture.start { [recordingBuffer, audioPipe] chunk in
-                    let data = chunk.samples.withUnsafeBytes { Data($0) }
-                    recordingBuffer.append(data)
-                    audioPipe.yield(data)
-                } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
-            }
+            // Samples go straight to the on-device model: no IPC, no
+            // subprocess, nothing leaves this process.
+            try capture.start { [recordingBuffer, parakeet] chunk in
+                recordingBuffer.append(chunk.samples.withUnsafeBytes { Data($0) })
+                Task { await parakeet.accept(chunk.samples) }
+            } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
             state = machine.handle(.pressToTalk); hotkeys?.enableEscapeCancellation(true)
             let target = recordingSnapshot?.target.name ?? "No target"
             lastStatus = "Listening for \(target)"; presentOverlay(.listening(target: target))
@@ -727,7 +608,7 @@ private struct PendingAgentInteraction: Sendable {
             if let warning = metrics.qualityMessage {
                 audioSenderTask?.cancel(); audioSenderTask = nil
                 recordingSessionID = nil; recordingSnapshot = nil; recordingReleasedAt = nil
-                Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) }
+                Task { [parakeet] in await parakeet.cancel() }
                 lastStatus = warning; state = machine.handle(.failure(warning)); presentOverlay(.error(message: warning)); dismissOverlay(after: 2)
                 return
             }
@@ -735,14 +616,9 @@ private struct PendingAgentInteraction: Sendable {
         let sender = audioSenderTask; audioSenderTask = nil
         Task {
             do {
-                if usesParakeet {
-                    let text = try await parakeet.finish()
-                    guard recordingSessionID == session else { return }
-                    await handleFinalTranscript(text, sessionID: session)
-                } else {
-                    await sender?.value
-                    _ = try await worker.sendJSON(.audioStop, body: EmptyBody(), sessionID: session)
-                }
+                let text = try await parakeet.finish()
+                guard recordingSessionID == session else { return }
+                await handleFinalTranscript(text, sessionID: session)
             } catch { await MainActor.run { self.fail(error) } }
         }
         recordingTimeoutTask?.cancel()
@@ -756,74 +632,6 @@ private struct PendingAgentInteraction: Sendable {
         }
     }
 
-    private func handleWorkerFrame(_ frame: IPCFrame) async {
-        if frame.header.messageType == MessageType.error.rawValue,
-           let value = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any] {
-            let message = value["detail"] as? String ?? value["message"] as? String ?? "Speech worker error"
-            if frame.header.sessionID == wakeSessionID { wakeSessionID = nil }
-            fail(NSError(domain: "MiriSpeechWorker", code: 1, userInfo: [NSLocalizedDescriptionKey: message]))
-            return
-        }
-        if frame.header.messageType == MessageType.wakeDetected.rawValue,
-           frame.header.sessionID == wakeSessionID {
-            await activateWakeUtterance()
-            return
-        }
-        if frame.header.messageType == MessageType.audioEndpoint.rawValue,
-           frame.header.sessionID == recordingSessionID,
-           wakeUtterance, state == .listening {
-            endListening()
-            return
-        }
-        if frame.header.messageType == "response",
-           let value = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
-           value["operation"] as? String == MessageType.health.rawValue {
-            let stt = value["stt"] as? [String: Any]; let tts = value["tts"] as? [String: Any]
-            let sttReady = stt?["ready"] as? Bool == true; let ttsReady = tts?["ready"] as? Bool == true
-            speechHealth = "STT \(sttReady ? "ready" : "not ready") · TTS \(ttsReady ? "ready" : "not ready")"
-            return
-        }
-        if frame.header.messageType == "response",
-           let value = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
-           let operation = value["operation"] as? String,
-           operation == MessageType.modelInstall.rawValue || operation == MessageType.modelStatus.rawValue {
-            if operation == MessageType.modelInstall.rawValue {
-                let installed = value["installed"] as? [String] ?? []
-                speechHealth = installed.isEmpty ? "No managed models required" : "Installed \(installed.count) model artifact(s)"
-                _ = try? await worker.sendJSON(.health, body: EmptyBody())
-            } else if value["configured"] as? Bool == false {
-                speechHealth = "Managed model manifest not configured; using local provider paths"
-            }
-            return
-        }
-        if frame.header.messageType == MessageType.modelProgress.rawValue,
-           let progress = try? JSONDecoder().decode(ModelProgressBody.self, from: frame.payload) {
-            let total = progress.totalBytes.map { " / \($0)" } ?? ""
-            speechHealth = "Downloading \(progress.model): \(progress.downloadedBytes)\(total) bytes"
-            return
-        }
-        if frame.header.messageType == MessageType.speechChunk.rawValue {
-            if let speechRequestedAt {
-                performance.record("first_audio_ms", milliseconds: Date().timeIntervalSince(speechRequestedAt) * 1_000, sessionID: frame.header.sessionID)
-                self.speechRequestedAt = nil
-            }
-            do { try pcmPlayer?.enqueuePCMBytes(frame.payload) } catch { fail(error) }
-            return
-        }
-        if frame.header.messageType == MessageType.speechStop.rawValue {
-            guard frame.header.sessionID == speechSessionID else { return }
-            speechTimeoutTask?.cancel(); speechTimeoutTask = nil
-            speechSessionID = nil; speechInterruptible = true; speechPriority = 0
-            if let pcmPlayer { pcmPlayer.finishWhenDrained { [weak self] in self?.speechFinished() } }
-            else { speechFinished() }
-            return
-        }
-        guard frame.header.messageType == MessageType.transcriptFinal.rawValue,
-              frame.header.sessionID == recordingSessionID,
-              let value = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
-              let text = value["text"] as? String else { return }
-        await handleFinalTranscript(text, sessionID: frame.header.sessionID)
-    }
 
     /// Shared terminal step for every transcription backend. The Python worker
     /// reaches it through `handleWorkerFrame`; Parakeet calls it directly.
@@ -916,11 +724,9 @@ private struct PendingAgentInteraction: Sendable {
         wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
         hotkeyIsHeld = false; listeningAttemptID = nil
-        let recording = recordingSessionID; let speech = speechSessionID; let wake = wakeSessionID
+        let recording = recordingSessionID; let wake = wakeSessionID
         recordingSessionID = nil; recordingSnapshot = nil; speechSessionID = nil; wakeSessionID = nil
-        if let recording { Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: recording) } }
-        if let speech { Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: speech) } }
-        if let wake { Task { _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: wake) } }
+        Task { [synth] in await synth.stop() }
         logger.log(.error, "interaction failed: \(error.localizedDescription)")
         state = machine.handle(.failure(error.localizedDescription)); presentOverlay(.error(message: error.localizedDescription))
         dismissOverlay(after: 2)
@@ -941,9 +747,9 @@ private struct PendingAgentInteraction: Sendable {
             guard speechInterruptible && request.priority > speechPriority else { return .init(accepted: false, message: "A status of equal or higher priority is already speaking") }
             synthesizer.stopSpeaking(at: .immediate)
         }
-        if let session = speechSessionID {
+        if speechSessionID != nil {
             guard speechInterruptible && request.priority > speechPriority else { return .init(accepted: false, message: "A status of equal or higher priority is already speaking") }
-            _ = try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session); pcmPlayer?.stop()
+            await synth.stop(); pcmPlayer?.stop()
         }
         return await startSpeech(request.text, target: "Agent", interruptible: request.interruptible, priority: request.priority)
     }
@@ -976,18 +782,44 @@ private struct PendingAgentInteraction: Sendable {
         presentOverlay(.speaking(target: target))
         let session = UUID().uuidString; speechSessionID = session; speechInterruptible = interruptible; speechPriority = priority
         do {
-            _ = try await worker.sendJSON(.speechStart, body: SpeechStartBody(text: text), sessionID: session)
+            try await synth.load()
+            try await synth.speak(
+                text,
+                onFrame: { [weak self] samples in
+                    await MainActor.run {
+                        guard let self, self.speechSessionID == session else { return }
+                        if let speechRequestedAt = self.speechRequestedAt {
+                            self.performance.record("first_audio_ms", milliseconds: Date().timeIntervalSince(speechRequestedAt) * 1_000, sessionID: session)
+                            self.speechRequestedAt = nil
+                        }
+                        do { try self.pcmPlayer?.enqueue(samples) } catch { self.fail(error) }
+                    }
+                },
+                onFinish: { [weak self] error in
+                    Task { @MainActor in
+                        guard let self, self.speechSessionID == session else { return }
+                        if let error { self.fail(error); return }
+                        self.speechTimeoutTask?.cancel(); self.speechTimeoutTask = nil
+                        self.speechSessionID = nil; self.speechInterruptible = true; self.speechPriority = 0
+                        if let pcmPlayer = self.pcmPlayer { pcmPlayer.finishWhenDrained { [weak self] in self?.speechFinished() } }
+                        else { self.speechFinished() }
+                    }
+                }
+            )
             speechTimeoutTask?.cancel()
             speechTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard self?.speechSessionID == session else { return }
-                    self?.fail(NSError(domain: "MiriSpeechWorker", code: 3, userInfo: [NSLocalizedDescriptionKey: "Speech playback timed out; the session was reset"]))
+                    self?.fail(NSError(domain: "MiriSpeech", code: 3, userInfo: [NSLocalizedDescriptionKey: "Speech playback timed out; the session was reset"]))
                 }
             }
             return .init(accepted: true, message: "Status queued")
         } catch {
+            // The on-device voice is unavailable; the system voice keeps the
+            // agent audible rather than failing the interaction silently.
+            logger.log(.warning, "on-device voice unavailable, using system voice: \(error.localizedDescription)")
             speechSessionID = nil; speechInterruptible = interruptible; speechPriority = priority
             if let speechRequestedAt {
                 performance.record("first_audio_ms", milliseconds: Date().timeIntervalSince(speechRequestedAt) * 1_000, sessionID: session)
@@ -1005,10 +837,9 @@ private struct PendingAgentInteraction: Sendable {
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; recordingBuffer.reset()
         hotkeyIsHeld = false; listeningAttemptID = nil
         hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil
-        if let session = wakeSessionID { Task { try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) } }
         wakeSessionID = nil
-        if let session = recordingSessionID { Task { try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) } }
-        if let session = speechSessionID { Task { try? await worker.sendJSON(.cancel, body: EmptyBody(), sessionID: session) } }
+        Task { [parakeet] in await parakeet.cancel() }
+        Task { [synth] in await synth.stop() }
         pcmPlayer?.stop(); speechSessionID = nil; speechInterruptible = true; speechPriority = 0
         recordingSessionID = nil; recordingSnapshot = nil; hotkeys?.enableEscapeCancellation(false)
         state = machine.handle(.cancel); presentOverlay(.cancelled); dismissOverlay(after: 0.25)
@@ -1131,17 +962,9 @@ private struct PendingAgentInteraction: Sendable {
                 case .parakeet:
                     await loadParakeetIfInstalled()
                     lastStatus = "On-device transcription enabled"
-                    // Parakeet does not use the worker for transcription, and
-                    // the worker keeps serving TTS, so restarting it here would
-                    // only stall speech for no reason.
-                case .local:
-                    await parakeet.unload()
-                    lastStatus = "Moonshine transcription enabled"
-                    await restartWorker()
                 case .cloud:
                     await parakeet.unload()
                     lastStatus = "Cloud transcription enabled"
-                    await restartWorker()
                 }
             } catch { lastStatus = "Could not save speech settings: \(error.localizedDescription)" }
         }
@@ -1205,48 +1028,16 @@ private struct PendingAgentInteraction: Sendable {
         return FileManager.default.fileExists(atPath: expand(path))
     }
 
+
+    // Wake word ran entirely inside the Python worker. It was always
+    // experimental, and stays unavailable until a CoreML wake model is wired in.
     private func startWakeMonitoring(after delay: TimeInterval = 0) async {
-        guard inputMode == .wakeWord, wakeSessionID == nil, state == .idle else { return }
-        if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
-        guard inputMode == .wakeWord, wakeSessionID == nil, state == .idle else { return }
-        guard wakeWordIsConfigured else {
-            lastStatus = "Wake word needs a local openWakeWord model path in Settings/config"
-            presentOverlay(.error(message: "Wake-word model missing")); dismissOverlay(after: 3)
-            return
-        }
-        microphonePermission = await MicrophonePermissions.request()
-        guard microphonePermission == .granted else { lastStatus = "Microphone access is required for wake word"; return }
-        guard await worker.state == .running else { lastStatus = "Speech worker is not running"; return }
-        let session = UUID().uuidString
-        do {
-            _ = try await worker.sendJSON(.wakeStart, body: WakeStartBody(), sessionID: session)
-            wakeSessionID = session
-            let stream = audioPipe.open()
-            audioSenderTask = Task { [worker] in
-                do {
-                    for await data in stream {
-                        _ = try await worker.send(messageType: .wakeChunk, sessionID: session, payload: data, kind: .pcmFloat32)
-                    }
-                } catch { await MainActor.run { self.fail(error) } }
-            }
-            try capture.start { [audioPipe] chunk in
-                audioPipe.yield(chunk.samples.withUnsafeBytes { Data($0) })
-            } onError: { [weak self] error in Task { @MainActor in self?.fail(error) } }
-            let target = targets.first(where: { $0.id == activeTargetID })?.name ?? "active target"
-            lastStatus = "Wake word listening · \(target)"
-            presentOverlay(.listening(target: "Wake word · \(target)"))
-        } catch {
-            wakeSessionID = nil; fail(error)
-        }
+        guard inputMode == .wakeWord else { return }
+        lastStatus = "Wake word is unavailable in this build. Use push to talk."
+        inputMode = .pushToTalk
     }
 
-    private func stopWakeMonitoring() async {
-        guard let session = wakeSessionID else { return }
-        wakeSessionID = nil; capture.stop(); audioPipe.finish()
-        let sender = audioSenderTask; audioSenderTask = nil
-        await sender?.value
-        _ = try? await worker.sendJSON(.wakeStop, body: EmptyBody(), sessionID: session)
-    }
+    private func stopWakeMonitoring() async { wakeSessionID = nil }
 
     private func activateWakeUtterance() async {
         guard wakeSessionID != nil else { return }
@@ -1330,8 +1121,8 @@ private struct PendingAgentInteraction: Sendable {
         alert.alertStyle = .warning; NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
-            await worker.stop()
             await parakeet.unload()
+            await synth.unload()
             do {
                 if FileManager.default.fileExists(atPath: MiriPaths.modelsDirectory.path) { try FileManager.default.removeItem(at: MiriPaths.modelsDirectory) }
                 // The on-device CoreML bundles live outside MiriPaths, so a
@@ -1352,19 +1143,8 @@ private struct PendingAgentInteraction: Sendable {
         speechHealth = "Preparing model download…"
         Task {
             do {
-                _ = try await worker.sendJSON(.modelInstall, body: ["consent": true])
-                currentConfiguration.sections["stt"] = [
-                    "provider": .string("moonshine"), "model": .string("small-streaming"),
-                    "model_path": .string(MiriPaths.modelsDirectory.appending(path: "moonshine/small-streaming-en").path),
-                    "model_arch": .integer(4)
-                ]
-                currentConfiguration.sections["tts", default: [:]]["provider"] = .string("pocket-tts")
-                currentConfiguration.sections["tts", default: [:]]["language"] = .string("english")
-                currentConfiguration.sections["tts", default: [:]]["voice"] = .string("alba")
-                currentConfiguration.sections["tts", default: [:]]["allow_model_downloads"] = .boolean(true)
-                currentConfiguration.sections["vad", default: [:]]["provider"] = .string("silero")
+                currentConfiguration.sections["stt"] = ["provider": .string("parakeet")]
                 try await configurationStore.write(currentConfiguration)
-                await restartWorker()
                 speechHealth = "Local speech models installed"
                 lastStatus = "Speech models are ready"
             } catch {
@@ -1380,8 +1160,8 @@ private struct PendingAgentInteraction: Sendable {
         alert.alertStyle = .critical; NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
-            await worker.stop(); await configurationStore.stopWatching()
-            await parakeet.unload()
+            await configurationStore.stopWatching()
+            await parakeet.unload(); await synth.unload()
             for url in [MiriPaths.applicationSupport, MiriPaths.cachesDirectory, MiriPaths.logsDirectory, URL(fileURLWithPath: MiriPaths.configPath).deletingLastPathComponent()] {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -1430,7 +1210,7 @@ private struct PendingAgentInteraction: Sendable {
         capture.stop(); hotkeys?.shutdown(); server?.stop()
         Task {
             await adapterRegistry.disconnectAll()
-            await worker.stop(); await configurationStore.stopWatching()
+            await configurationStore.stopWatching()
             NSApplication.shared.terminate(nil)
         }
     }

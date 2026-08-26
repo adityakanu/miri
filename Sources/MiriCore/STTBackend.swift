@@ -1,40 +1,30 @@
 import Foundation
 
-/// The user-facing speech-provider choice: an on-device model, or any
+/// The user-facing speech-provider choice: the on-device model, or any
 /// OpenAI-compatible endpoint (hosted or a local server such as whisper.cpp).
 public enum STTBackend: String, CaseIterable, Identifiable, Sendable {
-    case parakeet, local, cloud
+    case parakeet, cloud
     public var id: String { rawValue }
     public var displayName: String {
         switch self {
         case .parakeet: "On-device (Parakeet)"
-        case .local: "On-device (Moonshine)"
         case .cloud: "OpenAI-compatible API"
         }
     }
     public var detail: String {
         switch self {
-        case .parakeet: "Fully offline on the Apple Neural Engine. Recommended: most accurate local option, and it does not invent words during silence."
-        case .local: "Fully offline. Smallest model; lower accuracy on technical vocabulary."
+        case .parakeet: "Fully offline on the Apple Neural Engine. Recommended: accurate, fast, and it does not invent words during silence."
         case .cloud: "Sends each utterance to the endpoint you choose. Requires network."
         }
     }
     /// True when transcription happens entirely on this Mac.
     public var isOnDevice: Bool { self != .cloud }
     /// The value written to `stt.provider` in config.toml.
-    public var configurationValue: String {
-        switch self {
-        case .parakeet: "parakeet"
-        case .local: "moonshine"
-        case .cloud: "cloud"
-        }
-    }
+    public var configurationValue: String { rawValue }
+    /// Older releases wrote "moonshine"; those configurations now resolve to
+    /// the on-device default rather than failing to load.
     public init(configurationValue: String) {
-        switch configurationValue {
-        case "parakeet": self = .parakeet
-        case "cloud": self = .cloud
-        default: self = .local
-        }
+        self = configurationValue == "cloud" ? .cloud : .parakeet
     }
 }
 

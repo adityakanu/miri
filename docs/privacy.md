@@ -4,15 +4,21 @@ Miri defaults to local audio processing after explicit model download. It
 does not expose an HTTP server, enable analytics, or persist transcript history.
 The private control socket is created below `$TMPDIR/miri` for the current user.
 
-## Transcription backends
+## Speech runs inside the app
 
-- **Parakeet (recommended).** NVIDIA Parakeet TDT runs on the Apple Neural
-  Engine inside Miri's own process. Audio never crosses a process boundary and
-  never reaches the network. The CoreML bundles are downloaded once from
-  Hugging Face after you approve it; `ModelHub.offlineMode` blocks every network
-  fetch when you have not consented.
-- **Moonshine.** The embedded-Python worker path. Also fully local.
-- **Cloud.** Opt-in; see below.
+Both directions of the voice loop are CoreML models running in Miri's own
+process on the Apple Neural Engine:
+
+- **Transcription:** NVIDIA Parakeet TDT.
+- **Speech output:** PocketTTS.
+
+There is no Python runtime, no worker subprocess, and no local IPC for audio.
+Microphone samples reach the model as an in-process function call and are never
+serialised across a process boundary.
+
+Model bundles are downloaded once from Hugging Face after you approve it;
+`ModelHub.offlineMode` refuses every network fetch when you have not consented.
+Cloud transcription is separately opt-in; see below.
 
 ## Cloud transcription is opt-in and off by default
 

@@ -7,17 +7,15 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION=${1:-}
-PYTHON=${2:-}
 DIST="$ROOT/dist"
 STAGE="$ROOT/.preview"
 DMG_ROOT="$STAGE/dmg-root"
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
-  echo "usage: $0 <version> <standalone-python>" >&2
+  echo "usage: $0 <version>" >&2
   exit 2
 }
-[[ -x "$PYTHON" ]] || { echo "python is not executable: $PYTHON" >&2; exit 2; }
-for tool in xcodegen xcodebuild swift uv ditto hdiutil shasum codesign; do
+for tool in xcodegen xcodebuild swift ditto hdiutil shasum codesign; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 2; }
 done
 
@@ -34,35 +32,18 @@ APP_SOURCE="$STAGE/DerivedData/Build/Products/Release/Miri.app"
 APP="$STAGE/Miri.app"
 [[ -d "$APP_SOURCE" ]] || { echo "Xcode did not produce Miri.app" >&2; exit 1; }
 ditto "$APP_SOURCE" "$APP"
-mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Resources/worker"
+mkdir -p "$APP/Contents/Helpers"
 install -m 0755 "$ROOT/.build/release/miri" "$APP/Contents/Helpers/miri"
 install -m 0755 "$ROOT/.build/release/miri-mcp" "$APP/Contents/Helpers/miri-mcp"
-install -m 0755 "$ROOT/scripts/miri-worker-launcher" "$APP/Contents/Helpers/miri-worker"
 
-PYTHON_ROOT=$("$PYTHON" -c 'import sys; print(sys.prefix)')
-[[ -x "$PYTHON_ROOT/bin/python3" ]] || { echo "python prefix is not relocatable: $PYTHON_ROOT" >&2; exit 2; }
-ditto "$PYTHON_ROOT" "$APP/Contents/Resources/python"
-APP_PYTHON="$APP/Contents/Resources/python/bin/python3"
-
-# The standalone distribution includes Tk/Tcl developer frameworks that the
-# headless worker cannot use. Their dangling PrivateHeaders links also make
-# recursive ad-hoc signing fail with a misleading "Miri.app: No such file"
-# error, so omit them from the runtime shipped in the app.
-rm -rf \
-  "$APP/Contents/Resources/python/Frameworks/Tk.framework" \
-  "$APP/Contents/Resources/python/Frameworks/Tcl.framework"
-
-uv export --project "$ROOT/Worker" --extra inference --no-dev --no-emit-project --frozen \
-  --output-file "$STAGE/worker-requirements.txt"
-uv pip install --python "$APP_PYTHON" --target "$APP/Contents/Resources/worker" \
-  --require-hashes -r "$STAGE/worker-requirements.txt"
-uv pip install --python "$APP_PYTHON" --no-deps --target "$APP/Contents/Resources/worker" "$ROOT/Worker"
-cp "$ROOT/Worker/models/model-manifest.json" "$APP/Contents/Resources/model-manifest.json"
+# Speech runs on CoreML inside the app. No Python runtime, no worker helper,
+# and no model weights are embedded: Parakeet and PocketTTS models are fetched
+# on first use after the user consents.
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
-# Adding helpers and the Python runtime invalidates Xcode's initial signature.
+# Adding the CLI helpers invalidates Xcode's initial signature.
 # Re-sign the completed bundle ad-hoc: this costs nothing and is required for
 # executable code on Apple Silicon, but it is not Developer ID notarization.
 codesign --force --deep --sign - --timestamp=none \

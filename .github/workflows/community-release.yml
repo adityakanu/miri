@@ -18,18 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
-
       - name: Install build tools
         run: brew install xcodegen
 
       - name: Build and test
         run: |
-          uv sync --project Worker --extra dev --frozen
           make test
-
-      - name: Install bundled Python runtime
-        run: uv python install 3.13
 
       - name: Package ad-hoc signed DMG and ZIP
         id: package
@@ -39,8 +33,7 @@ jobs:
           set -euo pipefail
           version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          python_path="$(uv python find 3.13)"
-          scripts/build-community.sh "$version" "$python_path"
+          scripts/build-community.sh "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub community release

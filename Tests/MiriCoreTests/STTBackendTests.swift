@@ -6,15 +6,14 @@ final class STTBackendTests: XCTestCase {
         for backend in STTBackend.allCases {
             XCTAssertEqual(STTBackend(configurationValue: backend.configurationValue), backend)
         }
-        // Moonshine is the historical default; unknown values must not crash.
-        XCTAssertEqual(STTBackend(configurationValue: "moonshine"), .local)
-        XCTAssertEqual(STTBackend(configurationValue: "something-else"), .local)
-        XCTAssertEqual(STTBackend(configurationValue: "parakeet"), .parakeet)
+        // Configurations written by older releases must keep working.
+        XCTAssertEqual(STTBackend(configurationValue: "moonshine"), .parakeet)
+        XCTAssertEqual(STTBackend(configurationValue: "something-else"), .parakeet)
+        XCTAssertEqual(STTBackend(configurationValue: "cloud"), .cloud)
     }
 
     func testOnlyCloudLeavesTheDevice() {
         XCTAssertTrue(STTBackend.parakeet.isOnDevice)
-        XCTAssertTrue(STTBackend.local.isOnDevice)
         XCTAssertFalse(STTBackend.cloud.isOnDevice)
     }
 
