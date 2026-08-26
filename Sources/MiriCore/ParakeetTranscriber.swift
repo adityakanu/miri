@@ -30,6 +30,7 @@ public actor ParakeetTranscriber {
     private var decoderState: TdtDecoderState?
     private var buffer: [Float] = []
     private var active = false
+    private var loadTask: Task<Void, Error>?
     private let logger = MiriLogger()
 
     public init() {}
@@ -52,8 +53,23 @@ public actor ParakeetTranscriber {
 
     /// Loads the model, downloading it only when `allowDownload` is true.
     /// Miri requires explicit consent before any model download.
+    ///
+    /// Concurrent callers share one load. The `await` inside the load suspends
+    /// the actor, so without this a second caller would sail past the
+    /// `manager == nil` check and compile the CoreML encoder a second time —
+    /// which measurably starved the rest of the app for ~16 seconds.
     public func load(allowDownload: Bool) async throws {
         guard manager == nil else { return }
+        if let loadTask { return try await loadTask.value }
+        let task = Task<Void, Error> { [allowDownload] in
+            try await performLoad(allowDownload: allowDownload)
+        }
+        loadTask = task
+        defer { loadTask = nil }
+        try await task.value
+    }
+
+    private func performLoad(allowDownload: Bool) async throws {
         if !allowDownload {
             guard Self.isInstalled else { throw ParakeetError.modelsMissing }
             // Refuse every network fetch when the user has not consented.
@@ -70,6 +86,8 @@ public actor ParakeetTranscriber {
     }
 
     public func unload() {
+        loadTask?.cancel()
+        loadTask = nil
         manager = nil
         decoderState = nil
         buffer.removeAll()

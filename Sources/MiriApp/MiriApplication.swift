@@ -83,6 +83,7 @@ private struct PendingAgentInteraction: Sendable {
     private let logger = MiriLogger()
     private let performance = PerformanceRecorder()
     private let launchStartedAt = Date()
+    private var didRecordColdStart = false
     private lazy var delivery = DeliveryCoordinator(adapters: adapterRegistry)
     private let synthesizer = AVSpeechSynthesizer()
     private lazy var speechDelegate = SpeechDelegate { [weak self] in Task { @MainActor in self?.speechFinished() } }
@@ -182,7 +183,13 @@ private struct PendingAgentInteraction: Sendable {
                 _ = try await worker.sendJSON(.health, body: EmptyBody())
                 _ = try await worker.sendJSON(.modelStatus, body: EmptyBody())
                 logger.log("speech worker started")
-                performance.record("cold_start_ms", milliseconds: Date().timeIntervalSince(launchStartedAt) * 1_000)
+                // Only the first start is a cold start. Restarts happen minutes
+                // into a session and would otherwise record the elapsed session
+                // time as a launch metric.
+                if !didRecordColdStart {
+                    didRecordColdStart = true
+                    performance.record("cold_start_ms", milliseconds: Date().timeIntervalSince(launchStartedAt) * 1_000)
+                }
                 if inputMode == .wakeWord { await startWakeMonitoring() }
             } catch { lastStatus = "Worker unavailable: \(error.localizedDescription)"; logger.log(.error, lastStatus) }
         } else { lastStatus = "Worker missing. Run make bootstrap."; logger.log(.error, lastStatus) }
@@ -1124,16 +1131,18 @@ private struct PendingAgentInteraction: Sendable {
                 case .parakeet:
                     await loadParakeetIfInstalled()
                     lastStatus = "On-device transcription enabled"
+                    // Parakeet does not use the worker for transcription, and
+                    // the worker keeps serving TTS, so restarting it here would
+                    // only stall speech for no reason.
                 case .local:
                     await parakeet.unload()
                     lastStatus = "Moonshine transcription enabled"
+                    await restartWorker()
                 case .cloud:
                     await parakeet.unload()
                     lastStatus = "Cloud transcription enabled"
+                    await restartWorker()
                 }
-                // Moonshine and cloud both run inside the worker; Parakeet does
-                // not, but the worker still owns TTS, so it stays running.
-                await restartWorker()
             } catch { lastStatus = "Could not save speech settings: \(error.localizedDescription)" }
         }
     }
