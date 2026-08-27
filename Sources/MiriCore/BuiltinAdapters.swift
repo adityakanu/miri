@@ -33,7 +33,7 @@ public final class ClipboardAdapter: AgentAdapter, @unchecked Sendable {
 
 public actor GenericCommandAdapter: AgentAdapter {
     public nonisolated let id: String
-    public nonisolated let capabilities: AdapterCapabilities = [.cancellation]
+    public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .respondsToMessages]
     private let executable: URL
     private let arguments: [String]
     private let workingDirectory: URL?

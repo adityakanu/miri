@@ -8,6 +8,11 @@ public struct AdapterCapabilities: OptionSet, Codable, Sendable {
     public static let streaming = Self(rawValue: 1 << 1)
     public static let attachments = Self(rawValue: 1 << 2)
     public static let interactiveRequests = Self(rawValue: 1 << 3)
+    /// The adapter talks back: it emits `AgentEvent`s after a message, so Miri
+    /// should wait for a reply. Sinks such as Clipboard and the dictation
+    /// target never do, and showing them a "waiting" overlay strands it on
+    /// screen because no completion event is ever coming.
+    public static let respondsToMessages = Self(rawValue: 1 << 4)
 }
 public struct AgentInteractionRequest: Codable, Equatable, Identifiable, Sendable {
     public enum Kind: String, Codable, Sendable { case question, approval }

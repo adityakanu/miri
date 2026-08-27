@@ -5,7 +5,7 @@ import Foundation
 /// these wrappers without changing routing or UI contracts.
 public actor ClaudeCodeAdapter: AgentAdapter {
     public nonisolated let id: String
-    public nonisolated let capabilities: AdapterCapabilities = [.cancellation]
+    public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .respondsToMessages]
     private let command: GenericCommandAdapter
     public init(id: String, executable: URL, workingDirectory: URL, sessionID: String? = nil) {
         self.id = id
@@ -23,7 +23,7 @@ public actor ClaudeCodeAdapter: AgentAdapter {
 
 public actor HermesAdapter: AgentAdapter {
     public nonisolated let id: String
-    public nonisolated let capabilities: AdapterCapabilities = [.cancellation]
+    public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .respondsToMessages]
     private let endpoint: URL
     private let sessionID: String
     private let apiKey: String?

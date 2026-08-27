@@ -703,9 +703,22 @@ private final class AudioChunkPipe: @unchecked Sendable {
         switch outcome {
         case .delivered:
             clearQuestionIfNeeded(for: snapshot.target.id)
-            lastStatus = "Delivered to \(snapshot.target.name); waiting for response"
-            logger.log("transcript delivered target=\(snapshot.target.id)")
-            presentOverlay(.delivered(target: snapshot.target.name)); transitionOverlay(to: .waiting(target: snapshot.target.name), after: 0.65); state = machine.handle(.delivered)
+            // A sink (dictation, clipboard) never emits a completion event, so
+            // waiting on one strands the overlay on screen until it times out.
+            let repliesExpected = await adapterRegistry.adapter(for: snapshot.target.id)?
+                .capabilities.contains(.respondsToMessages) ?? false
+            if repliesExpected {
+                lastStatus = "Delivered to \(snapshot.target.name); waiting for response"
+                logger.log("transcript delivered target=\(snapshot.target.id)")
+                presentOverlay(.delivered(target: snapshot.target.name))
+                transitionOverlay(to: .waiting(target: snapshot.target.name), after: 0.65)
+            } else {
+                lastStatus = "Typed into \(snapshot.target.name)"
+                logger.log("transcript delivered to sink target=\(snapshot.target.id)")
+                presentOverlay(.delivered(target: snapshot.target.name))
+                dismissOverlay(after: 1)
+            }
+            state = machine.handle(.delivered)
         case .copied:
             clearQuestionIfNeeded(for: snapshot.target.id)
             lastStatus = "Copied for \(snapshot.target.name)"
@@ -1144,6 +1157,31 @@ private final class AudioChunkPipe: @unchecked Sendable {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task { _ = await delivery.editOutbox(id: entry.id, text: textView.string); await refreshOutbox() }
     }
+    /// Miri is an `LSUIElement` accessory app so it has no permanent Dock icon.
+    /// The side effect is that its windows open behind other apps and cannot be
+    /// reached with Cmd-Tab. Promoting to `.regular` while a real window is open
+    /// gives Settings a Dock icon, a menu bar, and normal focus; the app drops
+    /// back to accessory once the last window closes.
+    func beginWindowSession() {
+        guard NSApp.activationPolicy() != .regular else {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Returns to accessory mode when no ordinary window remains. The overlay is
+    /// a non-activating panel and must not count, or Miri would keep a Dock icon
+    /// forever after the first status overlay.
+    func endWindowSessionIfNeeded() {
+        let hasVisibleWindow = NSApp.windows.contains { window in
+            window.isVisible && window.canBecomeMain && !(window is NSPanel)
+        }
+        guard !hasVisibleWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     func openConfig() { NSWorkspace.shared.open(URL(fileURLWithPath: MiriPaths.configPath)) }
 
     /// True once a dictation target exists in the configuration.
@@ -1421,6 +1459,10 @@ private struct MiriOnboardingHost: View {
                     openAccessibilitySettings: controller.openAccessibilitySettings
                 )
             )
+            // Settings is a real window; give it a Dock icon and focus while it
+            // is open, then drop back to accessory when it closes.
+            .onAppear { controller.beginWindowSession() }
+            .onDisappear { controller.endWindowSessionIfNeeded() }
         }
     }
 }

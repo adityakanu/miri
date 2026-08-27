@@ -39,7 +39,7 @@ public struct CodexThreadSummary: Identifiable, Codable, Equatable, Sendable {
 /// schema. The managed CLI adapter remains available as a compatibility fallback.
 public actor CodexAppServerAdapter: AgentAdapter {
     public nonisolated let id: String
-    public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .streaming, .interactiveRequests]
+    public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .streaming, .interactiveRequests, .respondsToMessages]
     private enum RPCID: Sendable, Equatable { case integer(Int), string(String) }
     private struct PendingInteraction: Sendable { let rpcID: RPCID; let method: String }
     private let executable: URL
