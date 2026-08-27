@@ -166,6 +166,18 @@ These all require real hardware or a human; the code-side blockers are done.
 
 ### Completed in this cycle
 
+- All 11 findings from the independent review are closed in code. See
+  `docs/session-handoff-2026-08-27.md` for the per-finding detail.
+- Model downloads are gated process-wide: `ModelDownloadGate` blocks fetches at
+  launch, serialises loads, and restores the prior flag value, so an agent reply
+  can no longer kill a user-consented download and a consented load can no
+  longer open the door for an unconsented one.
+- The approval path is covered by tests that run the app's own code
+  (`ApprovalOutcome`), rather than parallel value types the controller never
+  called.
+- Per-agent mute now applies to the MCP path agents actually use; request
+  expiry, session presence, and routing reasons are wired into live call paths
+  instead of existing only as tested-but-unused types.
 - Only Parakeet transcription and push-to-talk are user-selectable; the
   non-functional cloud backend and unavailable wake word are no longer offered,
   and the inert model-profile control is gone.

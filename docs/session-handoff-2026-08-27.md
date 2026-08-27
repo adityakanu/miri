@@ -7,205 +7,100 @@ and worth reading, but its "still outstanding" list is now stale.
 ## Where things stand
 
 Branch: `feature/release-readiness-agent-hud`
-HEAD: `1d32ba3` (plus this doc update)
-19 commits ahead of `main`. **Nothing pushed to `origin`.** Working tree clean.
+HEAD: `ddb04ea` (plus this doc update)
+25 commits ahead of `main`. **Nothing pushed to `origin`.** Working tree clean.
 
-- `swift test`: **105 executed, 102 passed, 3 skipped, 0 failures**, zero
+- `swift test`: **108 executed, 105 passed, 3 skipped, 0 failures**, zero
   warnings. The 3 skips assert the model-*not*-installed path and skip because
   this machine has the models.
 - `swift build`: clean on Swift 6.2.1.
-- Artifacts rebuilt and verified from HEAD: `.preview/Miri.app` 57 MB arm64-only,
-  `dist/Miri-0.1.4.dmg` 30 MB, `.zip` 28 MB, signature valid, checksums OK, DMG
-  CRC valid, three license files bundled.
+- Artifacts rebuilt and verified **from this commit**: `.preview/Miri.app`
+  57 MB arm64-only, `dist/Miri-0.1.4.dmg` 30 MB, `.zip` 28 MB, signature valid,
+  checksums OK, DMG CRC valid, bundle reports `0.1.4`.
 
-Do not tag `v0.1.4` yet. See "What must happen before tagging".
+**All 11 review findings are now closed in code.** What remains is human and
+hardware work only. Do not tag `v0.1.4` yet — see "What must happen before
+tagging".
 
-## Do this first
+## What was fixed this session
 
-The independent review found 11 issues. Three stop-ships are fixed (`49aeb2b`,
-`1d32ba3`); **one remains open**, plus should-fix items. Full report:
-`/Users/adityakanu/.hermes/cache/delegation/subagent-summary-0-20260827_165339_806636.txt`
+Every fix below was verified by reverting it and watching a test fail, not by
+trusting a green suite.
 
-### ~~STOP-SHIP A — approval/deny failures are swallowed~~ FIXED in `1d32ba3`
+### STOP-SHIP B — `ModelHub.offlineMode` global mutable state — FIXED
 
-`respond(id:result:)` now throws on a dead pipe or failed write; the adapter
-re-inserts the pending interaction so it stays answerable, and Miri reports
-"Could not send your decision … The request is still waiting." Teardown keeps a
-best-effort decline. **Still needs a regression test** (see below).
+`Sources/MiriCore/ModelDownloadGate.swift` (new). `ModelHub.offlineMode` proxies
+a `nonisolated(unsafe) static var` documented as "set once at startup", and both
+loaders flipped it per load. That broke consent in both directions: an agent
+reply loading with `allowDownload: false` during a consented install killed the
+user's own download, and the `defer { offlineMode = false }` cleared the block
+while an unconsented loader was still fetching.
 
-### STOP-SHIP B — `ModelHub.offlineMode` is global mutable state; breaks consent both ways
+The gate blocks downloads process-wide at launch (`MiriApplication.init`),
+serialises loads so none overlap, and restores the *previous* value rather than
+hardcoding `false`. Verified: reverting the gate body to per-load flag flipping
+fails 3 of 4 tests in `ModelDownloadGateTests`.
 
-`FluidSpeechSynthesizer.swift:72-77` and `ParakeetTranscriber.swift:72-78`
+### Approval-path coverage — FIXED
 
-```swift
-if !allowDownload { guard Self.isInstalled else { throw ... }; ModelHub.offlineMode = true }
-defer { ModelHub.offlineMode = false }
-```
+`Sources/MiriCore/ApprovalOutcome.swift` (new). The review's central point was
+that all four stop-ships lived in `AppController` and nothing tested it.
+`resolveApprovalTranscript` now delegates to `ApprovalOutcome`, so
+`ApprovalOutcomeTests` exercises the code the app actually runs rather than a
+parallel implementation. Verified: restoring the original
+`try? await deliver(response); return .delivered(response)` fails
+`testAFailedSendIsNeverReportedAsSuccess` on all four assertions.
 
-`ModelHub.offlineMode` proxies `HFClient.offlineMode`, a
-`nonisolated(unsafe) static var` whose documented contract is "set once at
-startup". Two independent actors flip it per-load:
+### Should-fix items 5–8, 10 — FIXED
 
-- An agent reply arriving *during* a consented download calls
-  `synth.load(allowDownload: false)` → sets `offlineMode = true` → **the
-  user-consented Parakeet download fails** with `networkDisabled`.
-- The `defer` runs unconditionally, including when `allowDownload == true`, so a
-  consented loader **clears the offline flag while an unconsented loader is
-  still fetching** — the exact bypass this branch set out to close.
-- Also a Swift 6 data race: unsynchronised cross-actor writes to a
-  `nonisolated(unsafe)` global.
+- **Per-agent mute (#5).** The check only fired when a `targetID` was passed,
+  and the MCP path — the one agents actually use — passed none. `speak()` now
+  resolves a target for every kind and returns *before* the interruption logic,
+  so a muted agent cannot stop another agent's speech on its way to being
+  silenced. The check moved into `startSpeech`, the single choke point.
+- **Request expiry (#6).** Implemented, tested, and never used: all three
+  production sites passed `expiresAt: nil`. `AttentionItem` now defaults to a
+  300 s lifetime from the request's own `createdAt`, and `add()` sweeps against
+  that clock so the queue stays deterministic under an injected date.
+- **HUD presence (#7).** `hudModel` fabricated a `SessionPresence` per enabled
+  target with `lastActiveAt: now`, so every row shared a timestamp and recency
+  ordering degenerated to alphabetical. Presence is now recorded from real
+  agent events and deliveries, and — importantly — is fed to `ContextResolver`,
+  which previously received *no* sessions at all, meaning its foreground and
+  recency rules could never fire. `LiveSessionDirectory` deleted; it was never
+  instantiated outside its own tests.
+- **`HotkeyGesture` (#8).** Deleted. No press-duration measurement and no HUD
+  panel exist to open, so it was a pure function with no behaviour behind it.
+- **Cloud STT CLI (#10).** Removed `miri models use-cloud` and the moonshine
+  `use-defaults`/`use-accuracy` commands, which configured backends that no
+  longer exist. **Not done:** the unreachable `.cloud` branches in
+  `MiriApplication.swift` and `SettingsViews.swift` and the `STTBackend.cloud`
+  case still exist. `sttBackend` is only ever set via
+  `supported(configurationValue:)`, which returns `.parakeet` only, so the UI is
+  dead but harmless. Removing it is a visible Settings change — deliberately
+  left for a decision rather than done at release time.
 
-**Fix:** set `offlineMode = true` once at launch; clear it only for the duration
-of an explicitly consented install, serialised through one actor. In `defer`,
-restore the *previous* value — never hardcode `false`.
+### Doc fixes (#9) — FIXED
 
-### Then: regression tests for the approval path
+ANE claim corrected in `AGENTS.md` and `docs/competitive-landscape.md`
+(PocketTTS is GPU-backed); the stale "opt-in cloud transcription" feature line
+removed; test counts corrected in `README.md` and `docs/release-checklist.md`;
+size unified to the measured 57 MB.
 
-Commit `49aeb2b` fixed two stop-ships but **ships without tests**, which is how
-they got in. `AttentionQueueTests` / `MultiAgentRoutingTests` test the value
-types in isolation — **none exercise `AppController`, where all four stop-ships
-live**. That is the real coverage gap.
+### Nice-to-haves — FIXED
 
-Write tests that fail if `49aeb2b` / `1d32ba3` were reverted:
-- Agent with two open approvals: the transcript must answer the request captured
-  at recording start, not "first pending for this target".
-- A request withdrawn *while the user speaks* must be refused, not re-routed.
-- Two agents blocked at once must not start a recording.
-- **A failed `respond` write must leave the request pending and must not report
-  success** (fake an adapter whose `respond` throws).
+`isInstalled` on both loaders required only a non-empty directory, so a partial
+download passed the guard. Both now require a real CoreML bundle; verified
+against this machine's actual model tree (the skip-when-installed tests still
+skip, so a complete install is still recognised). Also: `pendingInteractions`
+IDs collected before mutation, `setVoice` deleted, `RoutingReason` now logged.
 
-Obstacle: the logic sits in `AppController` (`@MainActor`, ~1400 lines).
-Cheapest honest option is to extract one small pure function into `MiriCore`
-(e.g. `ApprovalBinding.resolve(requestID:queue:)`) and test that. Keep the diff
-tight; do not reshape the controller.
+### Deliberately not done
 
-Relevant code: `MiriApplication.swift:566-597` (routing, sets
-`recordingRequestID`), `:678-706` (request-ID lookup + fail-closed branch),
-`:94` (declaration).
-
-### Should-fix (review numbering)
-
-5. **Per-agent mute is bypassed on the path agents actually use.**
-   `MiriApplication.swift:781-785` gates on `mutedTargetIDs` only when
-   `targetID` is passed, but the MCP path `speak(_:)` at `:763` calls
-   `startSpeech` with no target — so an agent speaking through `miri-mcp` is
-   never muted. Move the check into `startSpeech`.
-6. **Request expiry is implemented, tested, and never used.** All three
-   production sites pass `expiresAt: nil` (`:272, :320, :749`), so `isExpired`
-   is always false and `removeExpired` is uncalled. An agent that hangs without
-   emitting anything waits forever and can capture a later utterance. Pass
-   `createdAt + 300` and sweep before each `pending()` read.
-7. **The HUD shows configured targets, not live sessions.** `:1082-1090`
-   fabricates a `SessionPresence` per enabled target with `lastActiveAt: now`;
-   `LiveSessionDirectory` is never instantiated in Sources. Every row shares the
-   same timestamp, so the recency tiebreak degenerates to alphabetical order.
-   Either feed a real directory from `.status` events or rename the section to
-   "Agent targets" and delete the unused type.
-8. **`HotkeyGesture` is dead code.** Referenced only by its tests; no
-   press-duration measurement and no `.openHUD` handler exist. The commit ships
-   a pure function, not the behaviour. Wire it using the existing
-   `hotkeyPressedAt`, or delete it and the claim.
-9. **Docs contradict each other** (see "Doc fixes" below).
-10. **Cloud STT still reachable via CLI/config.** `MiriCLI/main.swift:65`
-    `miri models use-cloud` writes a setting the app silently ignores;
-    unreachable `.cloud` branches remain in `MiriApplication.swift:956-999` and
-    `SettingsViews.swift:93-299`; `STTBackendTests.swift:12` still asserts
-    pre-narrowing behaviour.
-
-### Doc fixes (all verified wrong)
-
-- `AGENTS.md:21-23` and `docs/competitive-landscape.md:42` — claim **both**
-  models run on the ANE. Contradicted by `docs/architecture.md:17-19` and
-  `README.md:81-83` *on this same branch*. PocketTTS is GPU-backed.
-- `AGENTS.md:24-25` lists opt-in cloud transcription as current, while
-  `AGENTS.md:196` and README say it's unavailable in 0.1.4.
-- `README.md:195` / `docs/release-checklist.md:8` — "98 executed / 95 passing".
-  Real: **105 executed, 102 passed, 3 skipped**.
-- `AGENTS.md:35,72` says ~57 MB; `README.md:154` says ~56 MB. (Bare Xcode app is
-  22 MB; 56–57 MB is after the two 17 MB helpers — pick one and use it.)
-- `AGENTS.md:76` "105 tests pass, 3 skipped" double-counts: 105 is the total
-  *including* the skips.
-
-### Nice-to-have
-
-- `FluidSpeechSynthesizer.swift:48-54` — `isInstalled` returns true for any
-  non-empty `pocket-tts` dir, so a partial download passes the guard. Check for
-  a required model file.
-- Per-voice `.safetensors` are fetched lazily at *speak* time; preloading the
-  configured voice during the consented install closes a small unconsented
-  fetch window.
-- `setVoice` is never called — voice is fixed at `"alba"` in the initialiser.
-- `CodexAppServerAdapter.swift:259-265` mutates `pendingInteractions` while
-  iterating it (safe in Swift, fragile) — collect IDs first.
-- ~30 lines of dead wake-word plumbing survive at `MiriApplication.swift:662,
-  701, 861, 881-883, 1041-1060`.
-- `RoutingReason` is never named outside its own file — the logging it exists
-  for isn't wired up.
-- `AGENTS.md` documents `installParakeetModels`/`installModels` as distinct;
-  both are now one-line forwarders to `installSpeechModels`.
-
-**Release automation was reviewed and had no findings at any severity.**
-
-## What was done this session
-
-All committed on the branch.
-
-**Release scope narrowed to what actually works**
-- `STTBackend.supportedCases == [.parakeet]`,
-  `MiriInputMode.supportedCases == [.pushToTalk]` drive every picker. Legacy
-  `cloud` / `wake_word` / `moonshine` config values migrate silently.
-- Deleted `ModelLifecycleProfile` entirely — it was hidden from the UI but still
-  carried as a published property, config binding, and setter that changed no
-  behaviour. `audio.profile` stays allowlisted so old configs don't warn.
-- Version centralized on `MiriVersion.current`; plist, Codex client metadata,
-  and MCP `serverInfo` all report `0.1.4`.
-
-**Model consent and deletion (real user-facing bugs)**
-- Speaking could silently download ~520 MB of PocketTTS weights mid-conversation.
-  `startSpeech` now loads with `allowDownload: false`; a missing voice falls back
-  to the system voice.
-- `FluidSpeechSynthesizer.modelsDirectory` pointed at Application Support, but
-  FluidAudio caches TTS under `~/.cache/fluidaudio/Models`. Delete Models and
-  Reset All Data were leaving the voice behind. Both roots now removed.
-- One consent prompt covers both models and states the true ~1 GB total.
-- The old "installer" only wrote `stt.provider` — a placebo. Replaced.
-
-**Multi-agent attention**
-- `AttentionQueue` (value type, `Sources/MiriCore/AttentionQueue.swift`) keys
-  pending requests by request ID. Previously one dictionary slot per target, so
-  a second request from the same agent silently overwrote the first.
-- Approvals sort ahead of questions; expiry, agent disconnect/failure, and
-  Codex `serverRequest/resolved` all drop requests fail-closed.
-- `AgentEvent.interactionResolved` added so adapters can report a request
-  answered in the agent's own UI.
-
-**Session routing and HUD**
-- `Sources/MiriCore/SessionRouting.swift` — `SessionPresence`,
-  `LiveSessionDirectory` (expires on its own, no timer), `ContextResolver`
-  (pure, explainable, returns `needsSelection` rather than guessing).
-- `Sources/MiriCore/AgentHUDModel.swift` — HUD rows derived from live sessions
-  + attention. Muting silences speech without hiding that an agent is blocked.
-- `Sources/MiriApp/AgentSessionsMenu.swift` — live sessions in the menu bar with
-  per-agent mute. Reuses the existing menu; no second window.
-- `Sources/MiriCore/HotkeyGesture.swift` — quick tap opens the HUD, hold speaks;
-  any captured audio always counts as speech so a brief utterance is never lost.
-
-**Release automation**
-- `scripts/verify-release-evidence.sh` — blocks publication unless the benchmark
-  report's revision equals the release commit and every gate/metric passes.
-  Independently verified: exit 0 on a passing fixture; non-zero for stale
-  revision, incomplete status, and absent gates. **It correctly refuses the
-  current pre-pivot benchmark**, which is the desired behaviour.
-- `scripts/release-metadata.sh` — resolved SBOM from `.release` while the
-  community channel stages to `.preview`, so community SBOM generation was
-  silently broken. Now prefers `.preview`, refuses a bundle whose plist version
-  differs from the release, and includes the SBOM in the checksum file.
-- Workflow installs syft, gates before packaging, attaches all four artifacts.
-
-**Honesty fixes**
-- Hermes no longer advertises `.streaming`: it buffers the whole SSE body before
-  emitting deltas.
-- AGENTS.md sizes/test counts corrected; competitive-landscape 22 MB → 57 MB.
+- **Wake-word plumbing removal.** ~25 entangled sites across
+  `MiriApplication.swift`. Dead but harmless — `inputMode` can only be
+  `.pushToTalk`. Not worth the regression risk immediately before a release.
+- **Cloud Settings UI removal.** See #10 above.
 
 ## What must happen before tagging
 
@@ -216,9 +111,10 @@ These need real hardware or a human; no agent can close them.
    re-entry, no new `~/Library/Logs/DiagnosticReports/Miri-*.ips`.
 2. **30 overlay and final-transcript samples captured from the current commit.**
    The existing `artifacts/benchmarks/m4-responsive.json` predates the CoreML
-   pivot; the evidence gate will refuse it, by design. Prior overlay samples
-   (207/118/110 ms) missed the p95 < 100 ms gate and were taken with the
-   since-fixed double-load bug, so re-measurement may well pass.
+   pivot; the evidence gate refuses it, by design — confirmed again this
+   session (revision mismatch + two missing gates, exit 1). Prior overlay
+   samples (207/118/110 ms) missed the p95 < 100 ms gate and were taken with
+   the since-fixed double-load bug, so re-measurement may well pass.
 3. Fresh macOS user/machine without Xcode: model consent/download, offline use
    afterwards, Codex MCP setup, full STT → agent → TTS.
 4. Microphone denial/recovery, Bluetooth I/O, Reduce Motion + VoiceOver.
@@ -257,7 +153,11 @@ These need real hardware or a human; no agent can close them.
   hdiutil verify dist/Miri-0.1.4.dmg
   ./scripts/verify-release-evidence.sh "$(git rev-parse HEAD)" artifacts/benchmarks/m4-responsive.json
   ```
-- Lesson from this session, worth keeping: pure types were built and tested
-  first, then only partly wired into `AppController`. Tests passed against code
-  the app never executed. When adding logic to `MiriApplication.swift`, confirm
-  the live call path uses it — don't trust a green suite alone.
+- Lesson carried forward from the previous session: pure types were built and
+  tested first, then only partly wired into `AppController`, so tests passed
+  against code the app never executed. This session closed those gaps
+  (`ContextResolver` now receives real sessions; `HotkeyGesture` and
+  `LiveSessionDirectory` were deleted rather than left as untethered pure
+  functions) and adopted a stricter rule: **verify a fix by reverting it and
+  watching a named test fail.** Every fix in "What was fixed this session" was
+  checked that way. A green suite alone proves nothing about the live path.
