@@ -68,6 +68,7 @@ private struct PendingAgentInteraction: Sendable {
     @Published var sttTestStatus: String?
     @Published var isTestingSTT = false
     @Published var parakeetInstalled = ParakeetTranscriber.isInstalled
+    @Published var voiceInstalled = FluidSpeechSynthesizer.isInstalled
     @Published var isInstallingParakeet = false
     private var machine = InteractionMachine()
     private let policy = StatusPolicy()
@@ -781,7 +782,9 @@ private struct PendingAgentInteraction: Sendable {
         presentOverlay(.speaking(target: target))
         let session = UUID().uuidString; speechSessionID = session; speechInterruptible = interruptible; speechPriority = priority
         do {
-            try await synth.load()
+            // Never download mid-conversation: an agent reply must not trigger
+            // a ~520 MB fetch. Absent voices fall through to the system voice.
+            try await synth.load(allowDownload: false)
             try await synth.speak(
                 text,
                 onFrame: { [weak self] samples in
@@ -890,6 +893,7 @@ private struct PendingAgentInteraction: Sendable {
     /// that requires the explicit consent flow in `installParakeetModels`.
     private func loadParakeetIfInstalled() async {
         parakeetInstalled = ParakeetTranscriber.isInstalled
+        voiceInstalled = FluidSpeechSynthesizer.isInstalled
         guard parakeetInstalled else {
             speechHealth = "On-device model is not installed yet"
             return
@@ -903,27 +907,38 @@ private struct PendingAgentInteraction: Sendable {
         }
     }
 
-    /// Downloads the Parakeet CoreML bundles after explicit consent.
-    func installParakeetModels() {
+    /// Downloads both speech models after one explicit consent prompt.
+    ///
+    /// Transcription and speech are separate FluidAudio downloads. Asking only
+    /// about Parakeet left the voice to download silently during the first
+    /// agent reply, so consent covers the real total.
+    func installParakeetModels() { installSpeechModels() }
+
+    func installSpeechModels() {
         guard !isInstallingParakeet else { return }
         let alert = NSAlert()
-        alert.messageText = "Download the on-device speech model?"
-        alert.informativeText = "Miri downloads about 470 MB from Hugging Face once. After that, transcription runs entirely on this Mac with no network access."
+        alert.messageText = "Download the on-device speech models?"
+        alert.informativeText = "Miri downloads about 1 GB from Hugging Face once: roughly 470 MB for Parakeet transcription and 520 MB for the PocketTTS voice. After that, speech runs entirely on this Mac with no network access."
         alert.addButton(withTitle: "Download"); alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .informational; NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         isInstallingParakeet = true
-        speechHealth = "Downloading on-device speech model…"
+        speechHealth = "Downloading transcription model…"
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await parakeet.load(allowDownload: true)
-                isInstallingParakeet = false
                 parakeetInstalled = ParakeetTranscriber.isInstalled
-                speechHealth = "On-device speech model ready"
-                lastStatus = "On-device speech model installed"
+                speechHealth = "Downloading voice…"
+                try await synth.load(allowDownload: true)
+                voiceInstalled = FluidSpeechSynthesizer.isInstalled
+                isInstallingParakeet = false
+                speechHealth = "On-device speech models ready"
+                lastStatus = "On-device speech models installed"
             } catch {
                 isInstallingParakeet = false
+                parakeetInstalled = ParakeetTranscriber.isInstalled
+                voiceInstalled = FluidSpeechSynthesizer.isInstalled
                 speechHealth = "Download failed: \(error.localizedDescription)"
                 lastStatus = speechHealth
                 logger.log(.error, speechHealth)
@@ -1115,7 +1130,7 @@ private struct PendingAgentInteraction: Sendable {
     }
     func deleteDownloadedModels() {
         let alert = NSAlert(); alert.messageText = "Delete downloaded speech models?"
-        alert.informativeText = "Speech features stop until models are installed again. Configuration remains."
+        alert.informativeText = "Removes the Parakeet transcription model and the PocketTTS voice, about 1 GB in total. Speech stops until you install them again. Configuration remains."
         alert.addButton(withTitle: "Delete Models"); alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning; NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -1124,34 +1139,18 @@ private struct PendingAgentInteraction: Sendable {
             await synth.unload()
             do {
                 if FileManager.default.fileExists(atPath: MiriPaths.modelsDirectory.path) { try FileManager.default.removeItem(at: MiriPaths.modelsDirectory) }
-                // The on-device CoreML bundles live outside MiriPaths, so a
-                // "delete everything" action has to remove them explicitly.
+                // The CoreML bundles live outside MiriPaths, under two
+                // different FluidAudio roots. Both must go or this action
+                // silently leaves most of a gigabyte behind.
                 try ParakeetTranscriber.removeDownloadedModels()
-                parakeetInstalled = false
+                try FluidSpeechSynthesizer.removeDownloadedModels()
+                parakeetInstalled = false; voiceInstalled = false
                 speechHealth = "Models deleted"; lastStatus = "Models deleted. Reinstall models, then restart Miri."
                 logger.log("downloaded models deleted by user")
             } catch { lastStatus = "Could not delete models: \(error.localizedDescription)"; logger.log(.error, lastStatus) }
         }
     }
-    func installModels() {
-        let alert = NSAlert(); alert.messageText = "Download local speech models?"
-        alert.informativeText = "Miri will download only checksum-pinned artifacts from the configured manifest. Audio and transcripts remain local. Downloads can be resumed."
-        alert.addButton(withTitle: "Download Models"); alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational; NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        speechHealth = "Preparing model download…"
-        Task {
-            do {
-                currentConfiguration.sections["stt"] = ["provider": .string("parakeet")]
-                try await configurationStore.write(currentConfiguration)
-                speechHealth = "Local speech models installed"
-                lastStatus = "Speech models are ready"
-            } catch {
-                speechHealth = "Model install failed: \(error.localizedDescription)"
-                lastStatus = speechHealth
-            }
-        }
-    }
+    func installModels() { installSpeechModels() }
     func resetAllData() {
         let alert = NSAlert(); alert.messageText = "Reset all Miri data?"
         alert.informativeText = "Deletes configuration, models, caches, logs, and onboarding state. Miri then quits. This cannot be undone."
@@ -1166,6 +1165,7 @@ private struct PendingAgentInteraction: Sendable {
             }
             // FluidAudio keeps its CoreML bundles in its own directory.
             try? ParakeetTranscriber.removeDownloadedModels()
+            try? FluidSpeechSynthesizer.removeDownloadedModels()
             try? SecretStore.remove()
             UserDefaults.standard.removeObject(forKey: "didCompleteOnboarding")
             NSApplication.shared.terminate(nil)
@@ -1341,6 +1341,7 @@ private struct MiriOnboardingHost: View {
                 sttTestStatus: controller.sttTestStatus,
                 isTestingSTT: controller.isTestingSTT,
                 parakeetInstalled: controller.parakeetInstalled,
+                voiceInstalled: controller.voiceInstalled,
                 isInstallingParakeet: controller.isInstallingParakeet,
                 actions: .init(
                     requestMicrophoneAccess: controller.requestMicrophone,

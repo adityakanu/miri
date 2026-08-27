@@ -40,6 +40,7 @@ struct MiriSettingsView: View {
     let sttTestStatus: String?
     let isTestingSTT: Bool
     let parakeetInstalled: Bool
+    let voiceInstalled: Bool
     let isInstallingParakeet: Bool
     var configurationError: String?
     var actions = MiriSettingsActions()
@@ -69,26 +70,26 @@ struct MiriSettingsView: View {
                 Text(sttBackend.detail).font(.caption).foregroundStyle(.secondary)
             }
 
-            if sttBackend == .parakeet {
-                Section("On-device model") {
-                    HStack {
-                        Label(
-                            parakeetInstalled ? "Parakeet TDT is installed" : "Parakeet TDT is not installed",
-                            systemImage: parakeetInstalled ? "checkmark.circle.fill" : "arrow.down.circle"
-                        )
-                        .foregroundStyle(parakeetInstalled ? .green : .primary)
-                        Spacer()
-                        if !parakeetInstalled {
-                            Button(isInstallingParakeet ? "Downloading…" : "Download Model…") {
-                                actions.installParakeetModels()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isInstallingParakeet)
-                        }
+            Section("On-device models") {
+                Label(
+                    parakeetInstalled ? "Parakeet transcription is installed" : "Parakeet transcription is not installed",
+                    systemImage: parakeetInstalled ? "checkmark.circle.fill" : "arrow.down.circle"
+                )
+                .foregroundStyle(parakeetInstalled ? .green : .primary)
+                Label(
+                    voiceInstalled ? "PocketTTS voice is installed" : "PocketTTS voice is not installed",
+                    systemImage: voiceInstalled ? "checkmark.circle.fill" : "arrow.down.circle"
+                )
+                .foregroundStyle(voiceInstalled ? .green : .primary)
+                if !parakeetInstalled || !voiceInstalled {
+                    Button(isInstallingParakeet ? "Downloading…" : "Download Models…") {
+                        actions.installParakeetModels()
                     }
-                    Text("About 470 MB, downloaded once from Hugging Face. After that Miri transcribes with no network access at all.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isInstallingParakeet)
                 }
+                Text("About 1 GB in total, downloaded once from Hugging Face: roughly 470 MB for transcription and 520 MB for the voice. After that Miri speaks and listens with no network access at all.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             if sttBackend == .cloud {
