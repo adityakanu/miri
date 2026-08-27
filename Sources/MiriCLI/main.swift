@@ -11,15 +11,14 @@ func parsePriority(_ value: String) -> Int? {
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count >= 2 else { fail("usage: miri status <text> | miri models use-defaults --moonshine-path <directory> | miri agents test-codex", code: 64) }
+guard arguments.count >= 2 else { fail("usage: miri status <text> | miri agents use-codex --thread-id <id> | miri agents test-codex", code: 64) }
 
 switch arguments[1] {
 case "--help", "help":
     print("""
     Usage:
       miri status <text> [--kind KIND] [--priority 0...2] [--target ID]
-      miri models use-defaults --moonshine-path <directory>
-      miri models use-cloud [--model M] [--base-url URL] [--api-key-env VAR]
+      miri agents use-codex --thread-id <id>
       miri agents test-codex
     """)
 
@@ -40,51 +39,6 @@ case "status":
     do {
         let response = try ControlClient.send(.init(text: text, priority: priority, interruptible: !flags.contains("--non-interruptible"), kind: kind, targetID: targetID, sourceWorkingDirectory: FileManager.default.currentDirectoryPath))
         guard response.accepted else { fail(response.message) }
-    } catch { fail(error.localizedDescription) }
-
-case "models" where arguments.count >= 5 && ["use-defaults", "use-accuracy"].contains(arguments[2]):
-    guard let index = arguments.firstIndex(of: "--moonshine-path"), arguments.indices.contains(index + 1) else { fail("--moonshine-path is required", code: 64) }
-    let url = URL(fileURLWithPath: MiriPaths.configPath)
-    do {
-        let source = try String(contentsOf: url, encoding: .utf8)
-        var configuration = try MiriConfigurationParser.parse(source, file: url.path).configuration
-        configuration.sections["stt", default: [:]]["provider"] = .string("moonshine")
-        let accuracy = arguments[2] == "use-accuracy"
-        configuration.sections["stt", default: [:]]["model"] = .string(accuracy ? "medium-streaming" : "small-streaming")
-        configuration.sections["stt", default: [:]]["model_path"] = .string(arguments[index + 1])
-        configuration.sections["stt", default: [:]]["model_arch"] = .integer(accuracy ? 5 : 4)
-        configuration.sections["tts", default: [:]]["provider"] = .string("pocket-tts")
-        configuration.sections["tts", default: [:]]["language"] = .string("english")
-        configuration.sections["tts", default: [:]]["voice"] = .string("alba")
-        configuration.sections["tts", default: [:]]["allow_model_downloads"] = .boolean(true)
-        _ = try MiriConfigurationParser.parse(String(decoding: ConfigurationStore.serialize(configuration), as: UTF8.self), file: url.path)
-        try ConfigurationStore.serialize(configuration).write(to: url, options: .atomic)
-        print("Configured Moonshine \(accuracy ? "Medium" : "Small") Streaming and Pocket TTS in \(url.path)")
-    } catch { fail(error.localizedDescription) }
-
-case "models" where arguments.count >= 3 && arguments[2] == "use-cloud":
-    let url = URL(fileURLWithPath: MiriPaths.configPath)
-    func option(_ name: String) -> String? {
-        arguments.firstIndex(of: name).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
-    }
-    do {
-        let source = try String(contentsOf: url, encoding: .utf8)
-        var configuration = try MiriConfigurationParser.parse(source, file: url.path).configuration
-        configuration.sections["stt", default: [:]]["provider"] = .string("cloud")
-        configuration.sections["stt", default: [:]]["cloud_model"] = .string(option("--model") ?? "whisper-large-v3-turbo")
-        configuration.sections["stt", default: [:]]["cloud_base_url"] = .string(option("--base-url") ?? "https://api.groq.com/openai/v1")
-        let keyEnv = option("--api-key-env") ?? "GROQ_API_KEY"
-        configuration.sections["stt", default: [:]]["cloud_api_key_env"] = .string(keyEnv)
-        _ = try MiriConfigurationParser.parse(String(decoding: ConfigurationStore.serialize(configuration), as: UTF8.self), file: url.path)
-        try ConfigurationStore.serialize(configuration).write(to: url, options: .atomic)
-        print("Configured cloud transcription in \(url.path)")
-        if SecretStore.hasSecret() {
-            print("Using the API key stored in your Keychain.")
-        } else if ProcessInfo.processInfo.environment[keyEnv] != nil {
-            print("note: found \(keyEnv) in this shell. Save it in Settings > Speech so Miri can use it when launched from Finder.")
-        } else {
-            print("warning: no API key stored. Add one in Settings > Speech.")
-        }
     } catch { fail(error.localizedDescription) }
 
 case "agents" where arguments.count >= 5 && arguments[2] == "use-codex":

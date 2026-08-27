@@ -28,32 +28,11 @@ public struct SessionPresence: Identifiable, Equatable, Sendable {
     }
 
     public func isExpired(at date: Date) -> Bool { expiresAt <= date }
-}
 
-/// Memory-only registry of live agent sessions.
-public actor LiveSessionDirectory {
-    private var sessionsByID: [String: SessionPresence] = [:]
-
-    public init() {}
-
-    public func observe(_ session: SessionPresence) {
-        sessionsByID[session.id] = session
-    }
-
-    public func forget(targetID: String) {
-        sessionsByID.removeValue(forKey: targetID)
-    }
-
-    /// Live sessions, most recently active first. Expired entries are dropped
-    /// as a side effect, so no timer is needed to keep the list honest.
-    public func sessions(at date: Date = .now) -> [SessionPresence] {
-        sessionsByID = sessionsByID.filter { !$0.value.isExpired(at: date) }
-        return sessionsByID.values.sorted { left, right in
-            left.lastActiveAt == right.lastActiveAt
-                ? left.id < right.id
-                : left.lastActiveAt > right.lastActiveAt
-        }
-    }
+    /// How long an agent stays listed as live after its last observed
+    /// activity. Presence is refreshed by every agent event, so this only
+    /// expires sessions that have genuinely gone quiet.
+    public static let liveWindow: TimeInterval = 900
 }
 
 /// Why Miri chose a destination. Surfaced in the overlay and logs so an

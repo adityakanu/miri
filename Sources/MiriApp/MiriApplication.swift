@@ -117,6 +117,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var recordingTimeoutTask: Task<Void, Never>?
     private var speechTimeoutTask: Task<Void, Never>?
     private var attention = AttentionQueue()
+    /// Real observed presence per target, keyed by target ID. Recorded from
+    /// agent events and from deliveries, so the HUD reflects what actually
+    /// happened rather than one fabricated timestamp per configured target.
+    private var sessionPresence: [String: SessionPresence] = [:]
 
     override init() {
         // Block every model download for the process before anything can load
@@ -253,6 +257,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
 
     private func handleAgentEvent(_ event: AgentEvent, target: TargetDefinition) {
+        noteAgentActivity(target)
         switch event {
         case .status(let status):
             targetStatuses[target.id] = status
@@ -576,9 +581,12 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 recordingRequestID = nil
             } else {
                 let waiting = attention.pending()
+                let now = Date()
                 switch ContextResolver.resolve(
                     attention: waiting,
-                    pinnedDefault: routed.target
+                    sessions: Array(sessionPresence.values.filter { !$0.isExpired(at: now) }),
+                    pinnedDefault: routed.target,
+                    now: now
                 ) {
                 case .resolved(let resolved, let reason):
                     recordingSnapshot = reason == .pinnedDefault ? routed : resolved
@@ -703,6 +711,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
         let sendingLabel = showTranscriptPreview ? "\(snapshot.target.name) · \(String(text.prefix(80)))" : snapshot.target.name
         presentOverlay(.sending(target: sendingLabel))
+        // Speaking to an agent is the strongest presence signal there is, and
+        // it is what ContextResolver's recency rule reads.
+        noteAgentActivity(snapshot.target, spokenToByUser: true)
         let outcome = await delivery.deliver(text, to: snapshot)
         switch outcome {
         case .delivered:
@@ -790,7 +801,17 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func speak(_ request: VoiceStatusRequest) async -> ControlResponse {
         do { try await policy.validate(request) }
         catch { lastStatus = error.localizedDescription; return .init(accepted: false, message: error.localizedDescription) }
-        if request.kind == .question, let target = resolveStatusTarget(request) {
+        // Resolve the target for every kind, not just questions: this is the
+        // path `miri-mcp` uses, and without a target ID per-agent mute has
+        // nothing to match against.
+        let resolved = resolveStatusTarget(request)
+        // Return before the interruption logic below, so a muted agent cannot
+        // stop another agent's speech on its way to being silenced.
+        if let id = resolved?.id, mutedTargetIDs.contains(id) {
+            logger.log("agent speech skipped: target muted")
+            return .init(accepted: false, message: "\(resolved?.name ?? "That agent") is muted")
+        }
+        if request.kind == .question, let target = resolved {
             let interaction = AgentInteractionRequest(kind: .question, title: request.text)
             attention.add(.init(request: interaction, target: target, adapterBacked: false))
             pendingAgentPrompt = request.text
@@ -806,7 +827,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
             guard speechInterruptible && request.priority > speechPriority else { return .init(accepted: false, message: "A status of equal or higher priority is already speaking") }
             await synth.stop(); pcmPlayer?.stop()
         }
-        return await startSpeech(request.text, target: "Agent", interruptible: request.interruptible, priority: request.priority)
+        return await startSpeech(
+            request.text,
+            target: resolved?.name ?? "Agent",
+            targetID: resolved?.id,
+            interruptible: request.interruptible,
+            priority: request.priority
+        )
     }
 
     private func resolveStatusTarget(_ request: VoiceStatusRequest) -> TargetDefinition? {
@@ -825,18 +852,26 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
 
     private func speakAgentResponse(_ text: String, target: String, targetID: String? = nil) async {
-        if let targetID, mutedTargetIDs.contains(targetID) {
-            logger.log("agent response speech skipped: target muted")
-            return
-        }
         guard state == .idle, speechSessionID == nil, !synthesizer.isSpeaking else {
             logger.log(.warning, "agent response speech skipped because audio interaction is active")
             return
         }
-        _ = await startSpeech(text, target: target, interruptible: true, priority: 0)
+        _ = await startSpeech(text, target: target, targetID: targetID, interruptible: true, priority: 0)
     }
 
-    private func startSpeech(_ text: String, target: String, interruptible: Bool, priority: Int) async -> ControlResponse {
+    /// The single choke point for agent speech. The mute check lives here, not
+    /// in the callers, because the MCP path bypassed a caller-side check.
+    private func startSpeech(
+        _ text: String,
+        target: String,
+        targetID: String? = nil,
+        interruptible: Bool,
+        priority: Int
+    ) async -> ControlResponse {
+        if let targetID, mutedTargetIDs.contains(targetID) {
+            logger.log("agent speech skipped: target muted")
+            return .init(accepted: false, message: "\(target) is muted")
+        }
         lastStatus = "Speaking response from \(target)"; state = machine.handle(.speechStarted)
         presentOverlay(.speaking(target: target))
         let session = UUID().uuidString; speechSessionID = session; speechInterruptible = interruptible; speechPriority = priority
@@ -1126,19 +1161,26 @@ private final class AudioChunkPipe: @unchecked Sendable {
     /// Live sessions and everything waiting on the user, ready for the HUD.
     var hudModel: AgentHUDModel {
         let now = Date()
-        let sessions = targets.filter(\.enabled).map { target in
-            SessionPresence(
-                target: target,
-                status: targetStatuses[target.id] ?? .disconnected,
-                lastActiveAt: now,
-                expiresAt: now.addingTimeInterval(300)
-            )
-        }
         return AgentHUDModel(
-            sessions: sessions,
+            sessions: Array(sessionPresence.values.filter { !$0.isExpired(at: now) }),
             attention: attention,
             mutedTargetIDs: mutedTargetIDs,
             now: now
+        )
+    }
+
+    /// Records that an agent did something. Only observed activity creates
+    /// presence, so a configured-but-silent target never appears live and the
+    /// recency ordering reflects real timestamps.
+    private func noteAgentActivity(_ target: TargetDefinition, spokenToByUser: Bool = false) {
+        let now = Date()
+        let existing = sessionPresence[target.id]
+        sessionPresence[target.id] = SessionPresence(
+            target: target,
+            status: targetStatuses[target.id] ?? .ready,
+            lastActiveAt: now,
+            lastUserInteractionAt: spokenToByUser ? now : existing?.lastUserInteractionAt,
+            expiresAt: now.addingTimeInterval(SessionPresence.liveWindow)
         )
     }
     private func refreshOutbox() async { outboxEntries = await delivery.outboxEntries() }

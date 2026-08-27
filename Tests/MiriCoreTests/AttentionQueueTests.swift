@@ -37,6 +37,23 @@ final class AttentionQueueTests: XCTestCase {
         XCTAssertTrue(queue.pending(at: now.addingTimeInterval(5)).isEmpty)
     }
 
+    /// Production never passed an expiry, so `isExpired` was always false and
+    /// a hung agent's request waited forever, ready to capture a much later
+    /// utterance. Requests must expire by default.
+    func testRequestsExpireWithoutTheCallerAskingForIt() {
+        var queue = AttentionQueue()
+        let now = Date(timeIntervalSince1970: 100)
+        let request = AgentInteractionRequest(id: "approval", kind: .approval, title: "Run tests?", createdAt: now)
+        queue.add(.init(request: request, target: target, adapterBacked: true))
+
+        let lifetime = AttentionItem.defaultLifetime
+        XCTAssertNotNil(queue.item(requestID: "approval", at: now.addingTimeInterval(lifetime - 1)))
+        XCTAssertNil(
+            queue.item(requestID: "approval", at: now.addingTimeInterval(lifetime)),
+            "a request with no explicit expiry must not stay answerable forever"
+        )
+    }
+
     /// Disconnecting an agent must clear everything it was waiting on.
     func testRemovingATargetClearsOnlyItsOwnRequests() {
         var queue = AttentionQueue()

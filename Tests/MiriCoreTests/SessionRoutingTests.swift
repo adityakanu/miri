@@ -8,27 +8,6 @@ private func makeTarget(_ id: String, project: String? = nil) -> TargetDefinitio
 final class SessionRoutingTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000)
 
-    // MARK: - Live session directory
-
-    func testExpiredSessionsDisappearWithoutBeingRemovedByHand() async {
-        let directory = LiveSessionDirectory()
-        await directory.observe(.init(target: makeTarget("a"), status: .ready, lastActiveAt: now, expiresAt: now.addingTimeInterval(30)))
-        await directory.observe(.init(target: makeTarget("b"), status: .ready, lastActiveAt: now, expiresAt: now.addingTimeInterval(5)))
-
-        let live = await directory.sessions(at: now.addingTimeInterval(10))
-        XCTAssertEqual(live.map(\.id), ["a"])
-    }
-
-    func testObservingTheSameSessionUpdatesRatherThanDuplicates() async {
-        let directory = LiveSessionDirectory()
-        await directory.observe(.init(target: makeTarget("a"), status: .ready, lastActiveAt: now, expiresAt: now.addingTimeInterval(30)))
-        await directory.observe(.init(target: makeTarget("a"), status: .busy, lastActiveAt: now, expiresAt: now.addingTimeInterval(30)))
-
-        let live = await directory.sessions(at: now)
-        XCTAssertEqual(live.count, 1)
-        XCTAssertEqual(live.first?.status, .busy)
-    }
-
     // MARK: - Context resolver
 
     func testExplicitTargetAlwaysWins() {

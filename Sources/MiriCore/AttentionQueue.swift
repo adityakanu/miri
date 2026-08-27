@@ -7,6 +7,11 @@ public struct AttentionItem: Identifiable, Equatable, Sendable {
     public let adapterBacked: Bool
     public let expiresAt: Date?
 
+    /// How long a request stays answerable when the caller does not say.
+    /// An agent that blocks and then dies emits nothing, so without a default
+    /// its request waits forever and captures a much later utterance.
+    public static let defaultLifetime: TimeInterval = 300
+
     public init(
         request: AgentInteractionRequest,
         target: TargetDefinition,
@@ -16,7 +21,7 @@ public struct AttentionItem: Identifiable, Equatable, Sendable {
         self.request = request
         self.target = target
         self.adapterBacked = adapterBacked
-        self.expiresAt = expiresAt
+        self.expiresAt = expiresAt ?? request.createdAt.addingTimeInterval(Self.defaultLifetime)
     }
 
     public func isExpired(at date: Date) -> Bool {
@@ -51,6 +56,11 @@ public struct AttentionQueue: Equatable, Sendable {
     }
 
     public mutating func add(_ item: AttentionItem) {
+        // Reads already filter by expiry; sweeping on write is what stops the
+        // dictionary growing forever behind an agent that never answers.
+        // Swept against the incoming request's own clock rather than wall time,
+        // so the queue stays deterministic under an injected date.
+        removeExpired(at: item.request.createdAt)
         itemsByID[item.id] = item
     }
 
