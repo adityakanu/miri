@@ -54,6 +54,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
     @Published var outboxEntries: [OutboxEntry] = []
     @Published var speechHealth = "Speech models starting"
     @Published var pendingAgentPrompt: String?
+    /// Agents muted individually. Muting silences spoken notifications only;
+    /// the HUD still shows that the agent is blocked.
+    @Published var mutedTargetIDs: Set<String> = []
     @Published var codexIntegrationStatus = "Checking Codex integration…"
     @Published var sttBackend: STTBackend = .parakeet
     @Published var cloudSettings = STTCloudSettings()
@@ -272,7 +275,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
             pendingAgentPrompt = request.title
             lastStatus = "\(request.title). Hold \(activeHotkey) and say approve request or deny request."
             logger.log("agent interaction requested target=\(target.id) kind=\(request.kind.rawValue)")
-            Task { await speakAgentResponse("\(request.title). Say approve request or deny request.", target: target.name) }
+            Task { await speakAgentResponse("\(request.title). Say approve request or deny request.", target: target.name, targetID: target.id) }
         case .completed:
             completeAgentTurn(target)
         case .failed(let message):
@@ -319,7 +322,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         } else { lastStatus = "\(target.name) completed successfully" }
         logger.log("agent turn completed target=\(target.id) response_characters=\(response.count)")
         if shouldSpeakAgentResponses, let spoken = AgentSpeechFormatter.spokenText(from: response, maxCharacters: agentSpeechLimit) {
-            Task { await self.speakAgentResponse(spoken, target: target.name) }
+            Task { await self.speakAgentResponse(spoken, target: target.name, targetID: target.id) }
         } else {
             presentOverlay(.delivered(target: target.name)); dismissOverlay(after: 1.2)
         }
@@ -773,7 +776,11 @@ private final class AudioChunkPipe: @unchecked Sendable {
             ?? targets.first(where: { $0.enabled && $0.id == currentConfiguration.defaultTarget })
     }
 
-    private func speakAgentResponse(_ text: String, target: String) async {
+    private func speakAgentResponse(_ text: String, target: String, targetID: String? = nil) async {
+        if let targetID, mutedTargetIDs.contains(targetID) {
+            logger.log("agent response speech skipped: target muted")
+            return
+        }
         guard state == .idle, speechSessionID == nil, !synthesizer.isSpeaking else {
             logger.log(.warning, "agent response speech skipped because audio interaction is active")
             return
@@ -1067,6 +1074,35 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if agentSpeechMuted, state == .speaking { cancel() }
         lastStatus = agentSpeechMuted ? "Agent speech muted" : "Agent speech enabled"
     }
+
+    func toggleMute(targetID: String) {
+        if mutedTargetIDs.contains(targetID) {
+            mutedTargetIDs.remove(targetID)
+            lastStatus = "Unmuted \(targets.first { $0.id == targetID }?.name ?? targetID)"
+        } else {
+            mutedTargetIDs.insert(targetID)
+            lastStatus = "Muted \(targets.first { $0.id == targetID }?.name ?? targetID)"
+        }
+    }
+
+    /// Live sessions and everything waiting on the user, ready for the HUD.
+    var hudModel: AgentHUDModel {
+        let now = Date()
+        let sessions = targets.filter(\.enabled).map { target in
+            SessionPresence(
+                target: target,
+                status: targetStatuses[target.id] ?? .disconnected,
+                lastActiveAt: now,
+                expiresAt: now.addingTimeInterval(300)
+            )
+        }
+        return AgentHUDModel(
+            sessions: sessions,
+            attention: attention,
+            mutedTargetIDs: mutedTargetIDs,
+            now: now
+        )
+    }
     private func refreshOutbox() async { outboxEntries = await delivery.outboxEntries() }
 
     private func handleDrainedQueue(_ outcome: DeliveryOutcome, target: TargetDefinition) async {
@@ -1311,6 +1347,9 @@ private struct MiriOnboardingHost: View {
             }
             Button(controller.state == .listening ? "Finish Listening" : "Listen Now") { controller.toggleListening() }
             if controller.state == .speaking { Button("Stop Speaking") { controller.cancel() }.keyboardShortcut(.escape, modifiers: []) }
+            Divider()
+            AgentSessionsMenu(controller: controller)
+            Divider()
             Menu("Input Mode") {
                 ForEach(MiriInputMode.supportedCases) { mode in
                     Button { controller.setInputMode(mode) } label: {
