@@ -267,7 +267,12 @@ public actor CodexAppServerAdapter: AgentAdapter {
             // a cancelled turn). Drop it so a later utterance cannot approve
             // something Codex is no longer waiting on.
             guard let resolved = rpcID(from: params["requestId"]) else { break }
-            for (interactionID, pending) in pendingInteractions where pending.rpcID == resolved {
+            // Collect first: mutating the dictionary while iterating it is
+            // safe in Swift but fragile to read.
+            let stale = pendingInteractions
+                .filter { $0.value.rpcID == resolved }
+                .map(\.key)
+            for interactionID in stale {
                 pendingInteractions.removeValue(forKey: interactionID)
                 emit(.interactionResolved(interactionID))
             }

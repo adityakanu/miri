@@ -42,11 +42,20 @@ public actor ParakeetTranscriber {
             .appending(path: "Library/Application Support/FluidAudio/Models", directoryHint: .isDirectory)
     }
 
+    /// True once the CoreML bundles are on disk. An interrupted download can
+    /// leave an empty `parakeet-*` directory, which must not count as
+    /// installed or the loader fails instead of prompting for consent.
     public nonisolated static var isInstalled: Bool {
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: modelsDirectory, includingPropertiesForKeys: nil
         ) else { return false }
-        return contents.contains { $0.lastPathComponent.hasPrefix("parakeet") }
+        return contents.contains { candidate in
+            guard candidate.lastPathComponent.hasPrefix("parakeet") else { return false }
+            let inner = (try? FileManager.default.contentsOfDirectory(
+                at: candidate, includingPropertiesForKeys: nil
+            )) ?? []
+            return inner.contains { $0.pathExtension == "mlmodelc" }
+        }
     }
 
     public var isLoaded: Bool { manager != nil }

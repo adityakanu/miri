@@ -593,6 +593,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
                     // Bind the utterance to the exact request it answers, so a
                     // delayed transcript cannot approve a different one.
                     recordingRequestID = reason == .pendingRequest ? waiting.first?.id : nil
+                    // RoutingReason exists so an automatic choice is never
+                    // mysterious; log it rather than discarding it.
+                    logger.log("routing target=\(recordingSnapshot?.target.id ?? "none") reason=\(reason.rawValue)")
                 case .needsSelection:
                     // Several agents are blocked. Guessing here could approve
                     // the wrong command, so ask instead of recording.

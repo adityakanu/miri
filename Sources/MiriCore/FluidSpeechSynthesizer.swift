@@ -24,14 +24,12 @@ public actor FluidSpeechSynthesizer {
     private var manager: PocketTtsManager?
     private var loadTask: Task<Void, Error>?
     private var speakTask: Task<Void, Never>?
-    private var voice: String
+    private let voice: String
     private let logger = MiriLogger()
 
     public init(voice: String = "alba") { self.voice = voice }
 
     public var isLoaded: Bool { manager != nil }
-
-    public func setVoice(_ voice: String) { self.voice = voice }
 
     /// Where PocketTTS keeps its CoreML bundles.
     ///
@@ -45,12 +43,19 @@ public actor FluidSpeechSynthesizer {
 
     /// True once the English voice pack is on disk. Checked before speaking so
     /// an agent reply can never silently start a ~520 MB download.
+    ///
+    /// A non-empty directory is not enough: an interrupted download leaves the
+    /// tree partly written, and treating that as installed sends the loader
+    /// into a failure instead of the system-voice fallback.
     public nonisolated static var isInstalled: Bool {
         let root = modelsDirectory.appending(path: "pocket-tts", directoryHint: .isDirectory)
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: nil
+        guard let enumerator = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.isRegularFileKey]
         ) else { return false }
-        return !contents.isEmpty
+        for case let url as URL in enumerator where url.pathExtension == "mlmodelc" || url.pathExtension == "safetensors" {
+            return true
+        }
+        return false
     }
 
     /// Loads the voice, downloading it only when `allowDownload` is true.
