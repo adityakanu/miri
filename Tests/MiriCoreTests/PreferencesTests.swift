@@ -12,8 +12,7 @@ final class PreferencesTests: XCTestCase {
     func testConfigurationValuesMapToTypedPreferences() {
         XCTAssertEqual(MiriInputMode(rawValue: "push_to_talk"), .pushToTalk)
         XCTAssertEqual(MiriInputMode(rawValue: "wake_word"), .wakeWord)
-        XCTAssertEqual(ModelLifecycleProfile(rawValue: "responsive"), .responsive)
-        XCTAssertNil(ModelLifecycleProfile(rawValue: "fast"))
+        XCTAssertNil(MiriInputMode(rawValue: "telepathy"))
     }
 
     func testFirstRunStepNavigationStopsAtBoundaries() {

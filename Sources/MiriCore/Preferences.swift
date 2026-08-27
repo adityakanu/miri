@@ -26,23 +26,6 @@ public enum MiriInputMode: String, CaseIterable, Codable, Identifiable, Sendable
     }
 }
 
-public enum ModelLifecycleProfile: String, CaseIterable, Codable, Identifiable, Sendable {
-    case responsive
-    case balanced
-    case eco
-
-    public var id: String { rawValue }
-
-    public var displayName: String { rawValue.capitalized }
-
-    public var detail: String {
-        switch self {
-        case .responsive: "Keeps speech models warm for the lowest latency."
-        case .balanced: "Releases models after inactivity to reduce memory use."
-        case .eco: "Loads models only when needed to minimize background resources."
-        }
-    }
-}
 
 public enum FirstRunStep: Int, CaseIterable, Identifiable, Sendable {
     case welcome

@@ -42,7 +42,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
     @Published var activeTargetID: String?
     @Published var microphonePermission = MicrophonePermissions.current
     @Published var inputMode: MiriInputMode = .pushToTalk
-    @Published var modelProfile: ModelLifecycleProfile = .responsive
     @Published var audioDiagnostics: String?
     @Published var targetStatuses: [String: TargetStatus] = [:]
     @Published var lastAgentResponse: String?
@@ -174,7 +173,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if case .string(let value)? = configuration.sections["hotkeys"]?["active_target"] { activeHotkey = value }
         else { activeHotkey = "option+space" }
         configureHotkeys(for: configuration.targets.filter(\.enabled))
-        if case .string(let profile)? = configuration.sections["audio"]?["profile"] { modelProfile = ModelLifecycleProfile(rawValue: profile) ?? .responsive }
         if case .string(let provider)? = configuration.sections["stt"]?["provider"] { sttBackend = STTBackend.supported(configurationValue: provider) }
         else { sttBackend = .parakeet }
         if sttBackend == .parakeet {
@@ -888,16 +886,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
             catch { lastStatus = "Could not save input mode: \(error.localizedDescription)" }
         }
     }
-    func setModelProfile(_ profile: ModelLifecycleProfile) {
-        modelProfile = profile
-        currentConfiguration.sections["audio", default: [:]]["profile"] = .string(profile.rawValue)
-        Task {
-            do {
-                try await configurationStore.write(currentConfiguration)
-                lastStatus = "\(profile.displayName) speech profile enabled"
-            } catch { lastStatus = "Could not save model profile: \(error.localizedDescription)" }
-        }
-    }
 
     func applySTTPreset(_ preset: STTPreset) {
         cloudSettings.apply(preset)
@@ -1295,7 +1283,6 @@ private struct MiriOnboardingHost: View {
             microphonePermission: controller.microphonePermission,
             hotkey: $controller.activeHotkey,
             inputMode: $controller.inputMode,
-            modelProfile: $controller.modelProfile,
             targets: controller.targets,
             actions: .init(
                 requestMicrophoneAccess: controller.requestMicrophone,
@@ -1304,7 +1291,6 @@ private struct MiriOnboardingHost: View {
                 openLogs: controller.openLogs,
                 saveActiveHotkey: controller.saveActiveHotkey,
                 setInputMode: controller.setInputMode,
-                setModelProfile: controller.setModelProfile,
                 installModels: controller.installModels
             ),
             finish: finish
@@ -1374,8 +1360,7 @@ private struct MiriOnboardingHost: View {
                 microphonePermission: controller.microphonePermission,
                 activeHotkey: $controller.activeHotkey,
                 inputMode: $controller.inputMode,
-                modelProfile: $controller.modelProfile,
-                targets: controller.targets,
+                    targets: controller.targets,
                 codexThreads: controller.codexThreads,
                 isRefreshingCodexThreads: controller.isRefreshingCodexThreads,
                 speechHealth: controller.speechHealth,
@@ -1400,8 +1385,7 @@ private struct MiriOnboardingHost: View {
                     installCodexIntegration: controller.installCodexIntegration,
                     saveActiveHotkey: controller.saveActiveHotkey,
                     setInputMode: controller.setInputMode,
-                    setModelProfile: controller.setModelProfile,
-                    installModels: controller.installModels,
+                        installModels: controller.installModels,
                     deleteModels: controller.deleteDownloadedModels,
                     resetAllData: controller.resetAllData,
                     applySTTPreset: controller.applySTTPreset,

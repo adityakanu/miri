@@ -11,7 +11,6 @@ struct MiriSettingsActions {
     var installCodexIntegration: () -> Void = {}
     var saveActiveHotkey: () -> Void = {}
     var setInputMode: (MiriInputMode) -> Void = { _ in }
-    var setModelProfile: (ModelLifecycleProfile) -> Void = { _ in }
     var installModels: () -> Void = {}
     var deleteModels: () -> Void = {}
     var resetAllData: () -> Void = {}
@@ -26,7 +25,6 @@ struct MiriSettingsView: View {
     let microphonePermission: MicrophonePermission
     @Binding var activeHotkey: String
     @Binding var inputMode: MiriInputMode
-    @Binding var modelProfile: ModelLifecycleProfile
     let targets: [TargetDefinition]
     let codexThreads: [CodexThreadSummary]
     let isRefreshingCodexThreads: Bool
@@ -333,7 +331,6 @@ struct MiriOnboardingView: View {
     let microphonePermission: MicrophonePermission
     @Binding var hotkey: String
     @Binding var inputMode: MiriInputMode
-    @Binding var modelProfile: ModelLifecycleProfile
     let targets: [TargetDefinition]
     var actions = MiriSettingsActions()
     var finish: () -> Void
