@@ -2,6 +2,15 @@ import XCTest
 @testable import MiriCore
 
 final class AgentTests: XCTestCase {
+    func testHermesDoesNotAdvertiseBufferedResponsesAsStreaming() {
+        let adapter = HermesAdapter(
+            id: "hermes",
+            endpoint: URL(string: "http://127.0.0.1:8642")!,
+            sessionID: "session"
+        )
+        XCTAssertFalse(adapter.capabilities.contains(.streaming))
+    }
+
     func testCodexMCPInstallerUsesCLIWithoutEditingConfiguration() throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

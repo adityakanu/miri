@@ -1308,7 +1308,7 @@ private struct MiriOnboardingHost: View {
             Button(controller.state == .listening ? "Finish Listening" : "Listen Now") { controller.toggleListening() }
             if controller.state == .speaking { Button("Stop Speaking") { controller.cancel() }.keyboardShortcut(.escape, modifiers: []) }
             Menu("Input Mode") {
-                ForEach(MiriInputMode.allCases) { mode in
+                ForEach(MiriInputMode.supportedCases) { mode in
                     Button { controller.setInputMode(mode) } label: {
                         Label(mode.displayName, systemImage: controller.inputMode == mode ? "checkmark" : "circle")
                     }

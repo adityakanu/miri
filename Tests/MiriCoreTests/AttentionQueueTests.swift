@@ -28,4 +28,20 @@ final class AttentionQueueTests: XCTestCase {
         let pending = await queue.pending
         XCTAssertEqual(pending.map(\.request.id), ["second"])
     }
+
+    func testLookupFailsClosedWhenRequestHasExpired() async {
+        let queue = AttentionQueue()
+        let now = Date(timeIntervalSince1970: 100)
+        let target = TargetDefinition(id: "codex-miri", name: "Codex · miri", adapter: "codex")
+        let request = AgentInteractionRequest(id: "approval", kind: .approval, title: "Run tests?", createdAt: now)
+        await queue.add(.init(request: request, target: target, adapterBacked: true, expiresAt: now.addingTimeInterval(5)))
+
+        let live = await queue.item(requestID: "approval", at: now.addingTimeInterval(4))
+        let expired = await queue.item(requestID: "approval", at: now.addingTimeInterval(5))
+
+        XCTAssertEqual(live?.id, "approval")
+        XCTAssertNil(expired)
+        let pending = await queue.pending(at: now.addingTimeInterval(5))
+        XCTAssertTrue(pending.isEmpty)
+    }
 }

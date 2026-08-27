@@ -23,7 +23,7 @@ public actor ClaudeCodeAdapter: AgentAdapter {
 
 public actor HermesAdapter: AgentAdapter {
     public nonisolated let id: String
-    public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .streaming]
+    public nonisolated let capabilities: AdapterCapabilities = [.cancellation]
     private let endpoint: URL
     private let sessionID: String
     private let apiKey: String?
