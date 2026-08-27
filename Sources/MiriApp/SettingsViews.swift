@@ -18,6 +18,9 @@ struct MiriSettingsActions {
     var installParakeetModels: () -> Void = {}
     var addCursorTarget: () -> Void = {}
     var openAccessibilitySettings: () -> Void = {}
+    var refreshSessions: () -> Void = {}
+    var addSession: (AgentSessionSummary) -> Void = { _ in }
+    var removeTarget: (String) -> Void = { _ in }
 }
 
 struct MiriSettingsView: View {
@@ -37,21 +40,58 @@ struct MiriSettingsView: View {
     let isInstallingParakeet: Bool
     let hasCursorTarget: Bool
     let accessibilityGranted: Bool
+    let discoveredSessions: [AgentSessionSummary]
+    let isRefreshingSessions: Bool
+    let sessionDiscoveryNotes: [AgentSessionSummary.Agent: String]
     var configurationError: String?
     var actions = MiriSettingsActions()
 
-    var body: some View {
-        TabView {
-            general
-                .tabItem { Label("General", systemImage: "gearshape") }
-            speech
-                .tabItem { Label("Speech", systemImage: "waveform") }
-            targetsPane
-                .tabItem { Label("Targets", systemImage: "arrow.triangle.branch") }
-            privacy
-                .tabItem { Label("Privacy", systemImage: "hand.raised") }
+    /// Sidebar destinations. `Sessions` replaces the old "Targets" tab: the
+    /// pane is about live agent conversations, not a config file section.
+    enum Pane: String, CaseIterable, Identifiable, Hashable {
+        case general, speech, sessions, privacy
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .general: "General"
+            case .speech: "Speech"
+            case .sessions: "Sessions"
+            case .privacy: "Privacy"
+            }
         }
-        .frame(minWidth: 620, idealWidth: 680, minHeight: 470, idealHeight: 560)
+
+        var symbol: String {
+            switch self {
+            case .general: "gearshape"
+            case .speech: "waveform"
+            case .sessions: "bubble.left.and.bubble.right"
+            case .privacy: "hand.raised"
+            }
+        }
+    }
+
+    @State private var selection: Pane = .general
+
+    var body: some View {
+        NavigationSplitView {
+            List(Pane.allCases, selection: $selection) { pane in
+                NavigationLink(value: pane) {
+                    Label(pane.title, systemImage: pane.symbol)
+                }
+            }
+            .navigationSplitViewColumnWidth(MiriTheme.Metrics.sidebarWidth)
+            .listStyle(.sidebar)
+        } detail: {
+            switch selection {
+            case .general: general
+            case .speech: speech
+            case .sessions: targetsPane
+            case .privacy: privacy
+            }
+        }
+        .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 620)
         .accessibilityLabel("Miri settings")
     }
 
@@ -105,41 +145,48 @@ struct MiriSettingsView: View {
     }
 
     private var general: some View {
-        Form {
-            Section("Microphone") {
-                MicrophonePermissionRow(permission: microphonePermission, actions: actions)
+        MiriPane(title: "General", subtitle: "Microphone access, the push-to-talk shortcut, and local files.") {
+            MiriSection(title: "Microphone") {
+                MiriCard {
+                    MicrophonePermissionRow(permission: microphonePermission, actions: actions)
+                }
             }
-            Section("Interaction") {
-                LabeledContent("Push-to-talk shortcut") {
-                    HStack {
-                        // A placeholder identical to the current value was
-                        // painted behind the editor by AppKit when this row was
-                        // compressed, making option+space appear twice. Keep
-                        // the placeholder semantic and force a single line.
-                        TextField("Shortcut", text: $activeHotkey)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                            .lineLimit(1)
-                            .frame(width: 160)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .onSubmit { actions.saveActiveHotkey() }
-                        Button("Save") { actions.saveActiveHotkey() }
-                    }
+
+            MiriSection(
+                title: "Push to talk",
+                subtitle: "Hold this shortcut to speak. Miri listens only while it is held."
+            ) {
+                HStack(spacing: 8) {
+                    // A placeholder identical to the current value was painted
+                    // behind the editor by AppKit when this row was compressed,
+                    // making option+space appear twice. Keep the placeholder
+                    // semantic and force a single line.
+                    TextField("Shortcut", text: $activeHotkey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                        .frame(width: 180)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .onSubmit { actions.saveActiveHotkey() }
+                    Button("Save") { actions.saveActiveHotkey() }
                 }
                 .accessibilityElement(children: .combine)
-                Picker("Input mode", selection: $inputMode) {
-                    ForEach(MiriInputMode.supportedCases) { Text($0.displayName).tag($0) }
+                .accessibilityLabel("Push-to-talk shortcut")
+            }
+
+            MiriSection(title: "Speech models") {
+                MiriCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(speechHealth, systemImage: "waveform.badge.magnifyingglass")
+                            .font(.callout)
+                            .textSelection(.enabled)
+                        Button("Install or Repair Models…") { actions.installModels() }
+                    }
                 }
-                .onChange(of: inputMode) { _, value in actions.setInputMode(value) }
-                Text(inputMode.detail).font(.caption).foregroundStyle(.secondary)
             }
-            Section("Speech models") {
-                Label(speechHealth, systemImage: "waveform.badge.magnifyingglass")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Button("Install or Repair Models…") { actions.installModels() }
-            }
-            Section("Files") {
-                HStack {
+
+            MiriSection(title: "Files") {
+                HStack(spacing: 8) {
                     Button("Open Configuration") { actions.openConfiguration() }
                         .accessibilityHint("Opens Miri's TOML configuration file")
                     Button("Open Logs") { actions.openLogs() }
@@ -153,60 +200,22 @@ struct MiriSettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .padding(.top, 8)
     }
 
     private var targetsPane: some View {
-        Form {
-            Section("Codex threads") {
-                HStack {
-                    Text("Choose exact conversation used by voice commands.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button { actions.refreshCodexThreads() } label: {
-                        Label(isRefreshingCodexThreads ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise")
+        MiriPane(
+            title: "Sessions",
+            subtitle: "Live agent conversations Miri can speak to, and where the next utterance goes."
+        ) {
+            MiriSection(
+                title: "Active target",
+                subtitle: "Receives the next thing you say, unless an agent is waiting on you."
+            ) {
+                if targets.filter(\.enabled).isEmpty {
+                    MiriCard {
+                        Text("No targets yet. Add a session below, or the dictation target to type into any app.")
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(isRefreshingCodexThreads)
-                }
-                if codexThreads.isEmpty {
-                    Text("No Codex threads loaded. Start Codex, then refresh.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(codexThreads.prefix(20)) { thread in
-                        HStack(spacing: 12) {
-                            Image(systemName: thread.status == "active" ? "bolt.circle.fill" : "bubble.left.and.bubble.right")
-                                .foregroundStyle(thread.status == "active" ? .orange : .secondary)
-                                .frame(width: 22)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(thread.displayName).fontWeight(.medium).lineLimit(1)
-                                Text("\(URL(fileURLWithPath: thread.workingDirectory).lastPathComponent) · \(thread.id.prefix(8))")
-                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if targets.contains(where: { $0.session == thread.id }) {
-                                Label("Added", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                            } else {
-                                Button("Add Target") { actions.addCodexThread(thread) }
-                            }
-                        }
-                    }
-                }
-            }
-            Section("Codex voice integration") {
-                Label(codexIntegrationStatus, systemImage: "waveform.and.mic")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("Install or Repair Miri MCP…") { actions.installCodexIntegration() }
-                Text("Lets Codex announce progress, blockers, questions, and completion through Miri. Approval requests from Miri-managed threads are handled directly.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Active target") {
-                if targets.isEmpty {
-                    ContentUnavailableView(
-                        "No Targets Configured",
-                        systemImage: "arrow.triangle.branch",
-                        description: Text("Add a target to config.toml, then Miri will reload it automatically.")
-                    )
                 } else {
                     Picker("Target used for the next recording", selection: $activeTargetID) {
                         Text("Use configured default").tag(String?.none)
@@ -214,34 +223,89 @@ struct MiriSettingsView: View {
                             Text(target.name).tag(Optional(target.id))
                         }
                     }
-                    .pickerStyle(.radioGroup)
-                    ForEach(targets) { target in TargetSummaryRow(target: target, selected: target.id == activeTargetID) }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 380, alignment: .leading)
+
+                    VStack(spacing: 8) {
+                        ForEach(targets) { target in
+                            ConfiguredTargetRow(
+                                target: target,
+                                isActive: target.id == activeTargetID,
+                                remove: { actions.removeTarget(target.id) }
+                            )
+                        }
+                    }
                 }
             }
-            Section("Dictation") {
-                if hasCursorTarget {
-                    Label("Dictation target is configured.", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Add Dictation Target") { actions.addCursorTarget() }
-                        .buttonStyle(.borderedProminent)
+
+            MiriSection(
+                title: "Dictation",
+                subtitle: "Types where your cursor already is. Your clipboard is never used."
+            ) {
+                MiriCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if hasCursorTarget {
+                            Label("Dictation target is configured.", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Button("Add Dictation Target") { actions.addCursorTarget() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        if !accessibilityGranted {
+                            Label(
+                                "Accessibility permission is required before Miri can type.",
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .foregroundStyle(.orange)
+                            Button("Open Accessibility Settings") { actions.openAccessibilitySettings() }
+                        }
+                    }
                 }
-                if !accessibilityGranted {
-                    Label("Accessibility permission is required before Miri can type.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Button("Open Accessibility Settings") { actions.openAccessibilitySettings() }
+            }
+
+            MiriSection(
+                title: "Discovered sessions",
+                subtitle: "Conversations found across Codex, Claude Code, and Hermes."
+            ) {
+                HStack {
+                    Button { actions.refreshSessions() } label: {
+                        Label(
+                            isRefreshingSessions ? "Refreshing…" : "Refresh",
+                            systemImage: "arrow.clockwise"
+                        )
+                    }
+                    .disabled(isRefreshingSessions)
+                    Spacer()
                 }
-                Text("Sends your speech to whatever app has keyboard focus, typed at the caret. Your clipboard is never used.")
-                    .font(.caption).foregroundStyle(.secondary)
+
+                ForEach(AgentSessionSummary.Agent.allCases, id: \.self) { agent in
+                    AgentSessionGroup(
+                        agent: agent,
+                        sessions: discoveredSessions.filter { $0.agent == agent },
+                        note: sessionDiscoveryNotes[agent],
+                        isAdded: { session in targets.contains { $0.session == session.id } },
+                        add: { actions.addSession($0) }
+                    )
+                }
             }
-            Section {
-                Button("Edit Targets in Configuration") { actions.openConfiguration() }
-                    .keyboardShortcut("e", modifiers: [.command])
-                    .accessibilityHint("Opens the configuration file where targets are managed")
+
+            MiriSection(title: "Codex voice integration") {
+                MiriCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(codexIntegrationStatus, systemImage: "waveform.and.mic")
+                            .font(.callout)
+                        Button("Install or Repair Miri MCP…") { actions.installCodexIntegration() }
+                        Text("Lets Codex announce progress, blockers, questions, and completion through Miri.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
+
+            Button("Edit Targets in Configuration") { actions.openConfiguration() }
+                .keyboardShortcut("e", modifiers: [.command])
+                .accessibilityHint("Opens the configuration file where targets are managed")
         }
-        .formStyle(.grouped)
-        .padding(.top, 8)
     }
 
     private var privacy: some View {
@@ -434,6 +498,102 @@ private struct MicrophonePermissionRow: View {
         case .undetermined: "questionmark.circle"
         case .denied, .restricted: "exclamationmark.triangle.fill"
         }
+    }
+}
+
+/// One configured target: what it is, whether it receives the next utterance,
+/// and a way to remove it without editing config.toml.
+private struct ConfiguredTargetRow: View {
+    let target: TargetDefinition
+    let isActive: Bool
+    let remove: () -> Void
+
+    var body: some View {
+        MiriCard {
+            HStack(spacing: 12) {
+                Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(target.name).fontWeight(.medium).lineLimit(1)
+                    Text([target.adapter, target.hotkey].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !target.enabled {
+                    Text("Disabled").font(.caption).foregroundStyle(.secondary)
+                }
+                Button(role: .destructive) { remove() } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Remove \(target.name)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "\(target.name), \(target.adapter) adapter\(target.enabled ? "" : ", disabled")\(isActive ? ", active target" : "")"
+        )
+    }
+}
+
+/// Discovered sessions for one agent, with its own empty/failure note so a
+/// missing agent never looks like a missing feature.
+private struct AgentSessionGroup: View {
+    let agent: AgentSessionSummary.Agent
+    let sessions: [AgentSessionSummary]
+    let note: String?
+    let isAdded: (AgentSessionSummary) -> Bool
+    let add: (AgentSessionSummary) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(agent.displayName).font(.headline)
+                if agent.isExperimental {
+                    Text("Experimental")
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                        .accessibilityLabel("Experimental adapter")
+                }
+                Spacer()
+                if !sessions.isEmpty {
+                    Text("\(sessions.count)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if let note, sessions.isEmpty {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(sessions.prefix(8)) { session in
+                    MiriCard {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.title).lineLimit(1)
+                                Text(subtitle(for: session))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if isAdded(session) {
+                                Label("Added", systemImage: "checkmark.circle.fill")
+                                    .labelStyle(.iconOnly)
+                                    .foregroundStyle(.green)
+                                    .accessibilityLabel("Already added")
+                            } else {
+                                Button("Add") { add(session) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func subtitle(for session: AgentSessionSummary) -> String {
+        [session.projectName, String(session.id.prefix(8))]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 }
 

@@ -347,6 +347,121 @@ private final class AudioChunkPipe: @unchecked Sendable {
         return 180
     }
 
+    /// Discovered sessions across every agent, most recently active first.
+    @Published var discoveredSessions: [AgentSessionSummary] = []
+    @Published var isRefreshingSessions = false
+    /// Per-agent discovery problems, shown inline so a failure is visible
+    /// rather than looking like "this agent has no sessions".
+    @Published var sessionDiscoveryNotes: [AgentSessionSummary.Agent: String] = [:]
+
+    /// Refreshes sessions for all three agents.
+    ///
+    /// Each agent is discovered independently: Codex over JSON-RPC, Claude Code
+    /// from its transcripts on disk, Hermes over REST. One agent being absent
+    /// must not hide the others, so failures are recorded per agent instead of
+    /// aborting the refresh.
+    func refreshAllSessions() async {
+        guard !isRefreshingSessions else { return }
+        isRefreshingSessions = true
+        defer { isRefreshingSessions = false }
+
+        var notes: [AgentSessionSummary.Agent: String] = [:]
+        var found: [AgentSessionSummary] = []
+
+        await refreshCodexThreads()
+        if codexThreads.isEmpty {
+            notes[.codex] = "No Codex threads. Start Codex, then refresh."
+        }
+        found += codexThreads.map { thread in
+            AgentSessionSummary(
+                id: thread.id,
+                agent: .codex,
+                title: thread.displayName,
+                workingDirectory: thread.workingDirectory,
+                lastActiveAt: thread.updatedAt
+            )
+        }
+
+        let claude = ClaudeSessionDiscovery.sessions()
+        if claude.isEmpty { notes[.claude] = "No Claude Code sessions found on this Mac." }
+        found += claude
+
+        if let hermesEndpoint {
+            do {
+                found += try await HermesSessionDiscovery.sessions(
+                    endpoint: hermesEndpoint,
+                    apiKey: ProcessInfo.processInfo.environment["API_SERVER_KEY"]
+                )
+            } catch {
+                notes[.hermes] = error.localizedDescription
+            }
+        } else {
+            notes[.hermes] = "Set a Hermes endpoint in config.toml to list its sessions."
+        }
+
+        discoveredSessions = found.sorted { $0.lastActiveAt > $1.lastActiveAt }
+        sessionDiscoveryNotes = notes
+        logger.log("session discovery count=\(discoveredSessions.count)")
+    }
+
+    /// The Hermes API-server URL, taken from an existing Hermes target.
+    private var hermesEndpoint: URL? {
+        currentConfiguration.targets
+            .first { $0.adapter == "hermes" }?
+            .endpoint
+            .flatMap(URL.init(string:))
+    }
+
+    /// Adds a discovered session as a routable target.
+    func addDiscoveredSession(_ session: AgentSessionSummary) {
+        if let existing = currentConfiguration.targets.first(where: { $0.session == session.id }) {
+            selectTarget(existing.id); return
+        }
+        var id = session.suggestedTargetID
+        var suffix = 2
+        while currentConfiguration.targets.contains(where: { $0.id == id }) {
+            id = "\(session.suggestedTargetID)-\(suffix)"; suffix += 1
+        }
+        let target = TargetDefinition(
+            id: id,
+            name: "\(session.agent.displayName) – \(session.title.prefix(48))",
+            agent: session.agent.rawValue,
+            adapter: session.agent.rawValue,
+            workingDirectory: session.workingDirectory,
+            session: session.id,
+            // Hermes addresses its server by endpoint; the others do not.
+            endpoint: session.agent == .hermes ? hermesEndpoint?.absoluteString : nil
+        )
+        currentConfiguration.targets.append(target)
+        activeTargetID = id
+        Task {
+            do {
+                try await configurationStore.write(currentConfiguration)
+                lastStatus = "Added \(target.name)"
+            } catch {
+                lastStatus = "Could not add the session: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Removes a target. Sessions come and go, so the UI needs a way to prune
+    /// without hand-editing config.toml.
+    func removeTarget(id: String) {
+        currentConfiguration.targets.removeAll { $0.id == id }
+        if currentConfiguration.defaultTarget == id {
+            currentConfiguration.defaultTarget = currentConfiguration.targets.first?.id ?? ""
+        }
+        if activeTargetID == id { activeTargetID = nil }
+        Task {
+            do {
+                try await configurationStore.write(currentConfiguration)
+                lastStatus = "Removed target"
+            } catch {
+                lastStatus = "Could not remove the target: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func refreshCodexThreads() async {
         guard !isRefreshingCodexThreads else { return }
         guard let executable = findExecutable("codex") else {
@@ -1367,31 +1482,76 @@ private struct MiriOnboardingHost: View {
 
 @main struct MiriApplication: App {
     @StateObject private var controller = AppController()
+
+    /// The menu bar icon reflects what Miri is doing, so the current state is
+    /// readable without opening the menu.
+    private var menuBarSymbol: String {
+        if controller.pendingAgentPrompt != nil { return "questionmark.bubble.fill" }
+        switch controller.state {
+        case .listening: return "waveform.badge.mic"
+        case .speaking: return "speaker.wave.2.fill"
+        default: return "waveform"
+        }
+    }
+
     var body: some Scene {
-        MenuBarExtra("Miri", systemImage: "waveform") {
-            Text(controller.lastStatus).lineLimit(4).frame(maxWidth: 360)
-            Text(String(describing: controller.state).capitalized).font(.caption).foregroundStyle(.secondary)
-            if let diagnostics = controller.audioDiagnostics { Text(diagnostics).font(.caption2).foregroundStyle(.secondary) }
-            if let response = controller.lastAgentResponse {
-                Text("Full agent response available (\(response.count) characters)").font(.caption).foregroundStyle(.secondary)
-                Button("Show Full Agent Response…") { controller.showLastAgentResponse() }
-                Button("Copy Full Agent Response") { controller.copyLastAgentResponse() }
+        MenuBarExtra("Miri", systemImage: menuBarSymbol) {
+            // Status first: what Miri is doing right now, and anything it
+            // needs from you, before any configuration.
+            Section {
+                Text(controller.lastStatus).lineLimit(4).frame(maxWidth: 360)
+                if let diagnostics = controller.audioDiagnostics {
+                    Text(diagnostics).font(.caption2).foregroundStyle(.secondary)
+                }
             }
+
             if let prompt = controller.pendingAgentPrompt {
-                Label(prompt, systemImage: "questionmark.bubble.fill").lineLimit(3)
-                Text("Hold \(controller.activeHotkey) to answer the same agent thread.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Section("Waiting on you") {
+                    Label(prompt, systemImage: "questionmark.bubble.fill").lineLimit(3)
+                    Text("Hold \(controller.activeHotkey) to answer the same agent thread.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Menu("Active Target") {
-                if controller.targets.isEmpty { Text("No targets configured") }
-                ForEach(controller.targets) { target in
-                    Button { controller.selectTarget(target.id) } label: {
-                        Label("\(target.name) — \(controller.targetStatuses[target.id]?.rawValue ?? "starting")", systemImage: controller.activeTargetID == target.id ? "checkmark" : "circle")
+
+            Section {
+                Button(controller.state == .listening ? "Finish Listening" : "Listen Now") {
+                    controller.toggleListening()
+                }
+                if controller.state == .speaking {
+                    Button("Stop Speaking") { controller.cancel() }
+                        .keyboardShortcut(.escape, modifiers: [])
+                }
+                Button(controller.agentSpeechMuted ? "Enable Agent Speech" : "Mute Agent Speech") {
+                    controller.toggleAgentSpeech()
+                }
+            }
+
+            AgentSessionsMenu(controller: controller)
+
+            Section("Routing") {
+                Menu("Active target") {
+                    if controller.targets.isEmpty { Text("No targets configured") }
+                    ForEach(controller.targets) { target in
+                        Button { controller.selectTarget(target.id) } label: {
+                            Label(
+                                "\(target.name) — \(controller.targetStatuses[target.id]?.rawValue ?? "starting")",
+                                systemImage: controller.activeTargetID == target.id ? "checkmark" : "circle"
+                            )
+                        }
                     }
                 }
             }
+
+            if let response = controller.lastAgentResponse {
+                Section("Last response") {
+                    Text("\(response.count) characters").font(.caption).foregroundStyle(.secondary)
+                    Button("Show Full Response…") { controller.showLastAgentResponse() }
+                    Button("Copy Full Response") { controller.copyLastAgentResponse() }
+                }
+            }
+
             if !controller.outboxEntries.isEmpty {
-                Menu("Outbox (\(controller.outboxEntries.count))") {
+                Section("Outbox") {
                     ForEach(controller.outboxEntries) { entry in
                         Menu(entry.failure) {
                             Button("Retry") { controller.retryOutbox(entry) }
@@ -1402,26 +1562,19 @@ private struct MiriOnboardingHost: View {
                     }
                 }
             }
-            Button(controller.state == .listening ? "Finish Listening" : "Listen Now") { controller.toggleListening() }
-            if controller.state == .speaking { Button("Stop Speaking") { controller.cancel() }.keyboardShortcut(.escape, modifiers: []) }
-            Divider()
-            AgentSessionsMenu(controller: controller)
-            Divider()
-            Menu("Input Mode") {
-                ForEach(MiriInputMode.supportedCases) { mode in
-                    Button { controller.setInputMode(mode) } label: {
-                        Label(mode.displayName, systemImage: controller.inputMode == mode ? "checkmark" : "circle")
-                    }
+
+            Section {
+                SettingsLink { Text("Settings…") }
+                    .keyboardShortcut(",", modifiers: .command)
+                Button("View Logs") { controller.openLogs() }
+                if controller.microphonePermission == .denied {
+                    Button("Open Microphone Settings") { controller.openMicrophoneSettings() }
                 }
+                Button("Quit Miri") { controller.shutdown() }
+                    .keyboardShortcut("q", modifiers: .command)
             }
-            Button(controller.agentSpeechMuted ? "Enable Agent Speech" : "Mute Agent Speech") { controller.toggleAgentSpeech() }
-            Divider()
-            SettingsLink { Text("Open Settings…") }
-            Button("Open Config File") { controller.openConfig() }
-            Button("View Logs") { controller.openLogs() }
-            if controller.microphonePermission == .denied { Button("Open Microphone Settings") { controller.openMicrophoneSettings() } }
-            Button("Quit Miri") { controller.shutdown() }
         }
+
         Settings {
             MiriSettingsView(
                 microphonePermission: controller.microphonePermission,
@@ -1440,6 +1593,9 @@ private struct MiriOnboardingHost: View {
                 isInstallingParakeet: controller.isInstallingParakeet,
                 hasCursorTarget: controller.hasCursorTarget,
                 accessibilityGranted: AccessibilityPermission.isGranted,
+                discoveredSessions: controller.discoveredSessions,
+                isRefreshingSessions: controller.isRefreshingSessions,
+                sessionDiscoveryNotes: controller.sessionDiscoveryNotes,
                 actions: .init(
                     requestMicrophoneAccess: controller.requestMicrophone,
                     openMicrophoneSettings: controller.openMicrophoneSettings,
@@ -1456,7 +1612,10 @@ private struct MiriOnboardingHost: View {
                     saveSTTSettings: controller.saveSTTSettings,
                     installParakeetModels: controller.installParakeetModels,
                     addCursorTarget: controller.addCursorTarget,
-                    openAccessibilitySettings: controller.openAccessibilitySettings
+                    openAccessibilitySettings: controller.openAccessibilitySettings,
+                    refreshSessions: { Task { await controller.refreshAllSessions() } },
+                    addSession: controller.addDiscoveredSession,
+                    removeTarget: controller.removeTarget
                 )
             )
             // Settings is a real window; give it a Dock icon and focus while it
