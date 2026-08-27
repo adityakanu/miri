@@ -42,6 +42,10 @@ public struct DeliveryReceipt: Codable, Equatable, Sendable {
 }
 public enum AgentEvent: Codable, Equatable, Sendable {
     case status(TargetStatus), responseDelta(String), responseCompleted(String), interactionRequested(AgentInteractionRequest), completed, failed(String)
+    /// The agent stopped waiting on a request — it was answered elsewhere,
+    /// cancelled, or timed out. Miri must drop it so a later utterance cannot
+    /// answer something nothing is listening for.
+    case interactionResolved(String)
 }
 public protocol AgentAdapter: Sendable {
     var id: String { get }

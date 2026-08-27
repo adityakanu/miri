@@ -1,9 +1,29 @@
 # Performance benchmark protocol
 
-An M4 partial report is recorded for 0.1.4. TTS and aggregate resource gates
-pass; the report remains `incomplete` until 30 clean human push-to-talk samples
-cover overlay and final-transcript latency. M1 remains best-effort until a
-physical M1 report is checked in. Missing samples never count as passing.
+> [!IMPORTANT]
+> **The existing evidence is stale and must be recollected before 0.1.4 ships.**
+> The only report on disk, `artifacts/benchmarks/m4-responsive.json`, was
+> captured on 2026-07-16 at revision `d1e55b2`, which predates the removal of
+> the Python worker (`534c228`). It measured a Swift app *plus a Python speech
+> worker* across three PIDs. That process topology no longer exists: all speech
+> now runs on CoreML inside the app. Its numbers do not describe the shipping
+> build and must not be quoted in release notes.
+>
+> The report is also `incomplete` on its own terms: overlay response and final
+> transcript have zero samples. Missing samples never count as passing.
+
+## What must be recollected
+
+A releasable M4 report must be captured from the current CoreML-only build with:
+
+- 30 clean human push-to-talk utterances for overlay response;
+- 30 clean human push-to-talk utterances for final transcript;
+- 30 warm status phrases for first speech audio;
+- at least five idle minutes of resource sampling;
+- the **single** Miri PID plus any managed agent-server child. There is no
+  longer a Python worker PID to include.
+
+## Event stream
 
 The app writes privacy-safe timing events to
 `~/Library/Logs/Miri/performance.jsonl` (no audio or transcript text):
@@ -15,26 +35,40 @@ The app writes privacy-safe timing events to
 {"metric":"cold_start_ms","value":918.5,"session_id":"launch-example"}
 ```
 
+## Collecting a report
+
 Capture resource usage from a warm, idle app and combine it with the event file:
 
 ```sh
 pgrep -x Miri
 baseline=$(wc -l < ~/Library/Logs/Miri/performance.jsonl)
-python3 scripts/benchmark.py --pid <app-pid> --pid <worker-pid> --duration 300 \
+python3 scripts/benchmark.py --pid <miri-pid> --duration 300 \
   --events ~/Library/Logs/Miri/performance.jsonl \
   --events-start-line "$baseline" \
-  --output artifacts/benchmarks/m4-responsive.json
+  --output artifacts/benchmarks/m4.json
 ```
 
-Repeat `--pid` so CPU and RSS include Swift, Python inference, and any managed
-agent-server child included in the release measurement. The harness
-requires at least 30 samples for every gated metric. Run at least 30
-representative utterances for each latency p95, after models are
-warm, on AC power with the release build and `responsive` profile. Record cold
-start separately in release notes; it is informative but not one of the locked
-gates. Do not mix M1/M4 results or profiles in one report. Preserve the generated
-JSON, exact Git revision, app/model versions, input device, output device, and
-whether Bluetooth was active.
+`scripts/benchmark.py` is a developer measurement harness run from your own
+Python 3; it is not part of the shipped product and no Python is installed on a
+user's machine.
+
+Repeat `--pid` for any managed agent-server child that should be included in the
+release measurement. The harness requires at least 30 samples for every gated
+metric. Run the release build on AC power. Record cold start separately in
+release notes; it is informative but not one of the locked gates. Do not mix M1
+and M4 results in one report. Preserve the generated JSON, exact Git revision,
+app/model versions, input device, output device, and whether Bluetooth was
+active.
+
+Resource and latency phases may be combined without fabricating samples. After
+collecting human utterances, preserve the earlier resource gates with:
+
+```sh
+python3 scripts/benchmark.py \
+  --events ~/Library/Logs/Miri/performance.jsonl --events-start-line "$baseline" \
+  --base-report artifacts/benchmarks/m4.json \
+  --output artifacts/benchmarks/m4.json
+```
 
 For a reproducible synthetic full-path run, grant the invoking terminal
 Accessibility permission and run `scripts/benchmark-utterance.swift` 30 times
@@ -43,42 +77,43 @@ through the selected output into the selected microphone. Label this evidence
 `synthetic-loopback`; it catches regressions but does not replace the 30 spoken
 human utterances required for release accuracy and real-world latency claims.
 
-Resource and latency phases may be combined without fabricating samples. After
-collecting human utterances, preserve the earlier resource gates with:
+## Locked gates
 
-```sh
-python3 scripts/benchmark.py \
-  --events ~/Library/Logs/Miri/performance.jsonl --events-start-line "$baseline" \
-  --base-report artifacts/benchmarks/m4-responsive.json \
-  --output artifacts/benchmarks/m4-responsive.json
-```
+| Gate | Rule | Limit |
+| --- | --- | ---: |
+| Overlay response | p95 | < 100 ms |
+| Final transcript | p95 | < 1,000 ms |
+| First speech audio | p95 | < 500 ms |
+| Idle CPU (push-to-talk) | mean | < 1% |
+| Warm RSS | maximum | < 1,280 MB |
 
-Locked gates are p95 overlay under 100 ms, p95 final transcript under 1 second,
-p95 first audio under 500 ms, mean push-to-talk idle CPU under 1%, and maximum
-observed warm RSS under 1.25 GB. Wake-word idle CPU is reported separately and
-must remain under 5% of one M-series core.
+The harness still emits a `wake_word_idle_cpu_percent` field. Wake word is not
+selectable in 0.1.4, so that metric is always empty and is not a release gate.
+The report's `profile` field is likewise vestigial: model lifecycle profiles are
+no longer user-selectable.
 
-Evidence placeholders:
+## Evidence status
 
-| Hardware | Profile | Evidence | Status |
-| --- | --- | --- | --- |
-| Physical M4 / 16 GB | responsive | `artifacts/benchmarks/m4-responsive.json` | Partial: TTS, CPU, RSS pass; STT/overlay pending |
-| Physical M1 | responsive | `artifacts/benchmarks/m1-responsive.json` | Not measured; best-effort support |
+| Hardware | Evidence | Status |
+| --- | --- | --- |
+| Physical M4 / 16 GB | `artifacts/benchmarks/m4-responsive.json` | **Stale** — captured at `d1e55b2` against the removed Python worker, and incomplete. Recollect. |
+| Physical M1 | not captured | Not measured; best-effort support |
 
-## 0.1.4 M4 partial result
+## Historical record: pre-CoreML M4 partial run
 
-Captured 2026-07-16 on a MacBook Air `Mac16,12`, Apple M4, 16 GB, macOS
-26.5.1. The run included the Swift app, Python speech worker, and managed Codex
-app-server. Pocket TTS used 30 warm status phrases; resources used 293 samples
-over five idle minutes.
+Retained only for provenance. **Do not cite these figures for 0.1.4.**
+
+Captured 2026-07-16 on a MacBook Air `Mac16,12`, Apple M4, 16 GB, macOS 26.5.1,
+at revision `d1e55b2`. The run included the Swift app, the since-removed Python
+speech worker, and a managed Codex app-server.
 
 | Gate | Result | Limit | Status |
 | --- | ---: | ---: | --- |
-| First speech audio p95 | 251.258 ms | < 500 ms | Pass |
-| Idle CPU mean | 0.077% | < 1% | Pass |
-| Warm RSS maximum | 117.547 MB | < 1,280 MB | Pass |
-| Overlay response p95 | Missing | < 100 ms | Incomplete |
-| Final transcript p95 | Missing | < 1,000 ms | Incomplete |
+| First speech audio p95 | 251.258 ms | < 500 ms | Pass (obsolete topology) |
+| Idle CPU mean | 0.077% | < 1% | Pass (obsolete topology) |
+| Warm RSS maximum | 117.547 MB | < 1,280 MB | Pass (obsolete topology) |
+| Overlay response p95 | no samples | < 100 ms | Incomplete |
+| Final transcript p95 | no samples | < 1,000 ms | Incomplete |
 
-These are engineering measurements, not competitor claims. Do not describe the
-overall benchmark as passing until the two missing human-input gates pass.
+These are engineering measurements, not competitor claims. The overall benchmark
+is not passing and must not be described as passing.

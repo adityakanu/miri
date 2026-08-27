@@ -9,13 +9,27 @@ SBOM="$ROOT/dist/Miri-$VERSION.spdx.json"
 
 [[ -f "$DMG" ]] || { echo "usage: $0 <version> (DMG must already exist)" >&2; exit 2; }
 command -v syft >/dev/null || { echo "syft is required to generate the SPDX SBOM" >&2; exit 2; }
-# The notarized channel stages to .release, the community channel to .preview.
+# The community channel stages to .preview, the notarized channel to .release.
+# Community is the shipping channel, so it wins when both are staged; either
+# channel can override by passing the bundle explicitly as $2.
 if [[ -z "$APP" ]]; then
-  for candidate in "$ROOT/.release/Miri.app" "$ROOT/.preview/Miri.app"; do
+  for candidate in "$ROOT/.preview/Miri.app" "$ROOT/.release/Miri.app"; do
     if [[ -d "$candidate" ]]; then APP="$candidate"; break; fi
   done
 fi
-[[ -d "$APP" ]] || { echo "no staged Miri.app found (pass one as \$2)" >&2; exit 2; }
+[[ -d "$APP" ]] || {
+  echo "no staged Miri.app found at $ROOT/.preview or $ROOT/.release (pass one as \$2)" >&2
+  exit 2
+}
+
+# Fail closed if the staged bundle is not the version being published.
+APP_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+  "$APP/Contents/Info.plist" 2>/dev/null || true)
+[[ "$APP_VERSION" == "$VERSION" ]] || {
+  echo "staged $APP reports version '$APP_VERSION', expected '$VERSION'" >&2
+  exit 1
+}
+
 syft "dir:$APP" -o "spdx-json=$SBOM"
 (
   cd "$ROOT/dist"

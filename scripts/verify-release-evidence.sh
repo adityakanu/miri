@@ -37,6 +37,12 @@ for name in sorted(gates):
     if status != "pass":
         failures.append(f"gate {name} is {status!r}, expected 'pass'")
 
+# Metrics do not always carry a status, but when they do it must also pass.
+for name, metric in sorted((report.get("metrics") or {}).items()):
+    status = (metric or {}).get("status")
+    if status is not None and status != "pass":
+        failures.append(f"metric {name} is {status!r}, expected 'pass'")
+
 for failure in failures:
     print(f"benchmark evidence gate: {failure}", file=sys.stderr)
 sys.exit(1 if failures else 0)

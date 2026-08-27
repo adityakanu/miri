@@ -2,24 +2,14 @@ version = 1
 default_target = "clipboard"
 input_mode = "push_to_talk"
 
-[audio]
-profile = "responsive"
-
 [hotkeys]
 active_target = "option+space"
 
 [stt]
-# "parakeet" runs NVIDIA Parakeet TDT on the Apple Neural Engine, inside Miri
-# itself. No Python, no network. This is the default.
+# Parakeet is the only transcription backend exposed in 0.1.4. NVIDIA Parakeet
+# TDT v3 runs inside Miri itself on CoreML, with the encoder on the Apple
+# Neural Engine. No Python, no network after the one-time model download.
 provider = "parakeet"
-
-# Cloud transcription is opt-in and configured in Settings > Speech, which also
-# stores the API key in your Keychain. The key is never stored here.
-# provider = "cloud"
-# cloud_base_url = "https://api.groq.com/openai/v1"
-# cloud_model = "whisper-large-v3-turbo"
-# cloud_language = "en"
-# cloud_prompt = "Codex, Miri, SwiftUI, AVFoundation"  # bias toward your jargon
 
 # Point Miri at an agent CLI installed somewhere unusual (mise, asdf, volta).
 # By default it searches your login shell's PATH, then the common prefixes.
@@ -32,23 +22,26 @@ threshold = 0.5
 minimum_silence_ms = 500
 
 [tts]
-# PocketTTS on CoreML, in-process. Voice models download on first use.
+# PocketTTS on CoreML, in-process, English voice only. It runs at FluidAudio's
+# default GPU-backed compute placement, not on the Neural Engine.
 provider = "pocket-tts"
 voice = "alba"
 speak_agent_responses = true
 agent_response_max_characters = 180
 
-# Wake word is unavailable in this build: it ran inside the removed Python
-# worker. Push to talk is the supported input mode.
-[wakeword]
-enabled = false
+# Speech models are downloaded once from Hugging Face after a single explicit
+# consent prompt covering about 1 GB in total: roughly 470 MB for Parakeet in
+# ~/Library/Application Support/FluidAudio/Models, and roughly 520 MB for the
+# PocketTTS voice in ~/.cache/fluidaudio/Models. Settings > Speech >
+# Delete Models removes both.
 
 [[targets]]
 id = "clipboard"
 name = "Clipboard"
 adapter = "clipboard"
 
-# Add Codex conversations from Settings > Targets. Miri stores exact thread ID:
+# Add Codex conversations from Settings > Targets. Miri stores exact thread ID.
+# Codex is the live-validated adapter for 0.1.4.
 # [[targets]]
 # id = "codex-project"
 # name = "Codex – Project"
@@ -56,6 +49,7 @@ adapter = "clipboard"
 # working_directory = "/path/to/project"
 # session = "thread-uuid"
 
+# Claude Code and Hermes adapters are experimental in 0.1.4.
 # [[targets]]
 # id = "hermes-project"
 # name = "Hermes – Project"

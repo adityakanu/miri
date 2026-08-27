@@ -276,6 +276,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
             lastStatus = "\(request.title). Hold \(activeHotkey) and say approve request or deny request."
             logger.log("agent interaction requested target=\(target.id) kind=\(request.kind.rawValue)")
             Task { await speakAgentResponse("\(request.title). Say approve request or deny request.", target: target.name, targetID: target.id) }
+        case .interactionResolved(let requestID):
+            // Answered elsewhere or withdrawn: stop offering it.
+            attention.remove(id: requestID)
+            pendingAgentPrompt = attention.pending().first?.request.title
         case .completed:
             completeAgentTurn(target)
         case .failed(let message):

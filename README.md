@@ -64,9 +64,10 @@ make bootstrap
 swift run miri-app
 ```
 
-Requires Apple Silicon, macOS 14+, Xcode, and Homebrew. Speech models download
-after explicit consent on first use; no Python runtime or separate worker is
-needed.
+Requires Apple Silicon, macOS 14+, Xcode, and Homebrew. `swift run miri-app`
+runs the development app; `miri` is the CLI. Speech models download after one
+explicit consent prompt on first use. There is no Python runtime and no worker
+subprocess anywhere in the product.
 
 ## How it works
 
@@ -76,12 +77,14 @@ needed.
 | Release to transcribe locally. | Never guesses from the frontmost terminal. | Interrupt speech by starting a new recording. |
 
 - **Local speech:** NVIDIA Parakeet TDT v3 transcription and PocketTTS speech
-  synthesis run through FluidAudio/CoreML on the Apple Neural Engine, inside
-  Miri's own process.
-- **Optional cloud STT:** connect Groq, OpenAI, OpenRouter, a local server, or
-  any OpenAI-compatible `/audio/transcriptions` endpoint from Settings.
-- **Explicit agents:** Codex, Claude Code, Hermes, generic local commands, and
-  a safe Clipboard fallback.
+  synthesis run through FluidAudio/CoreML inside Miri's own process. The
+  Parakeet encoder runs on the Apple Neural Engine; PocketTTS runs at
+  FluidAudio's default GPU-backed placement.
+- **Push to talk only:** Miri listens only while you hold the shortcut. Wake
+  word is not available in 0.1.4.
+- **Explicit agents:** Codex is the validated adapter; Claude Code and Hermes
+  are experimental. Generic local commands and a safe Clipboard fallback are
+  also available.
 - **No focus stealing:** a compact notch-adjacent status pill stays out of your
   editor and terminal.
 - **Recoverable delivery:** one-item target queues plus a memory-only outbox
@@ -139,22 +142,26 @@ adapter = "clipboard"
 | Target | What Miri needs |
 | --- | --- |
 | Clipboard | Nothing else — copies the transcript safely. |
-| Codex | Working directory and exact thread ID. |
-| Claude Code | Working directory and optional session ID. |
-| Hermes | Local API-server URL and exact session ID. |
+| Codex (validated) | Working directory and exact thread ID. |
+| Claude Code (experimental) | Working directory and optional session ID. |
+| Hermes (experimental) | Local API-server URL and exact session ID. |
 | Generic command | Local executable path; transcript goes to stdin. |
 
-FluidAudio downloads the Parakeet and PocketTTS CoreML weights only after
-first-run consent and stores them under Application Support. Model weights are
-not embedded in the DMG. The application itself is about 22 MB.
+FluidAudio downloads the Parakeet and PocketTTS CoreML weights only after one
+explicit consent prompt covering about **1 GB** in total: roughly 470 MB for
+Parakeet under `~/Library/Application Support/FluidAudio/Models`, and roughly
+520 MB for the PocketTTS voice under `~/.cache/fluidaudio/Models`. Model weights
+are not embedded in the DMG. The packaged arm64 application itself is about
+**56 MB**, including the `miri` CLI and `miri-mcp` helper. **Settings → Speech →
+Delete Models** removes both model roots.
 
 ## Privacy
 
 Miri is local-first:
 
 - No analytics and no local HTTP server.
-- Audio stays on your Mac with the default Parakeet backend; cloud
-  transcription is explicit and opt-in.
+- Audio stays on your Mac: Parakeet is the only transcription backend in 0.1.4.
+- Push to talk only — Miri captures audio solely while you hold the shortcut.
 - No persistent transcript history.
 - Failed deliveries stay only in memory and disappear when Miri quits.
 - Logs omit raw audio and full transcripts by default.
@@ -168,11 +175,26 @@ to the process you explicitly choose.
 | Area | Status |
 | --- | --- |
 | Menu-bar app, hotkeys, overlay, routing, outbox | Implemented |
-| In-process Parakeet STT and PocketTTS on CoreML/ANE | Implemented |
-| Codex exact-thread targeting, speech, questions, and approvals | Implemented |
-| Claude Code and Hermes live compatibility matrix | In validation |
+| In-process Parakeet STT and PocketTTS on CoreML | Implemented |
+| Codex exact-thread targeting, speech, questions, and approvals | Implemented and live-validated |
+| Claude Code and Hermes adapters | Experimental — no live compatibility evidence yet |
+| M4 benchmark evidence | Stale; must be recollected against the CoreML-only build |
 | Signed/notarized DMG and official Homebrew Cask | Planned |
-| Optional OpenAI-compatible cloud transcription | Implemented |
+| Optional cloud transcription, wake word, model lifecycle profiles | Not available in 0.1.4 |
+
+### Known limitations
+
+- Ad-hoc signed, **not** Apple-notarized: a one-time **Open Anyway** is required.
+- Apple Silicon only, macOS 14 or newer.
+- English voice only; no custom vocabulary, multilingual catalog, spoken
+  correction, mobile/remote relay, or worktree/diff dashboard.
+- PocketTTS runs at FluidAudio's default GPU-backed placement, not the Neural
+  Engine. Only the Parakeet encoder is ANE-resident.
+- Published benchmark evidence is stale and incomplete.
+
+`swift test` currently executes 98 tests: 95 pass, 3 are skipped because they
+assert the model-not-installed path and the machine already has models
+downloaded.
 
 The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 
@@ -191,9 +213,9 @@ The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 Miri's local speech stack is powered by
 [FluidAudio](https://github.com/FluidInference/FluidAudio), an Apache-2.0 Swift
 framework from the FluidInference Team. Miri uses FluidAudio's CoreML model
-management, Parakeet TDT v3 ASR, PocketTTS streaming synthesis, and Apple Neural
-Engine execution. This is the foundation that lets Miri ship without Python
-and keep microphone audio in-process and on-device.
+management, Parakeet TDT v3 ASR, and PocketTTS streaming synthesis. This is the
+foundation that lets Miri ship without Python and keep microphone audio
+in-process and on-device.
 
 Parakeet TDT v3 was created by NVIDIA and converted to CoreML by
 FluidInference. PocketTTS was created by Kyutai and converted to CoreML by

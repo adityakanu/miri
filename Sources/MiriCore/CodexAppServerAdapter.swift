@@ -40,7 +40,7 @@ public struct CodexThreadSummary: Identifiable, Codable, Equatable, Sendable {
 public actor CodexAppServerAdapter: AgentAdapter {
     public nonisolated let id: String
     public nonisolated let capabilities: AdapterCapabilities = [.cancellation, .streaming, .interactiveRequests]
-    private enum RPCID: Sendable { case integer(Int), string(String) }
+    private enum RPCID: Sendable, Equatable { case integer(Int), string(String) }
     private struct PendingInteraction: Sendable { let rpcID: RPCID; let method: String }
     private let executable: URL
     private let workingDirectory: URL
@@ -254,6 +254,15 @@ public actor CodexAppServerAdapter: AgentAdapter {
         switch method {
         case "turn/started": targetStatus = .busy; emit(.status(.busy))
         case "turn/completed": completeTurnIfNeeded()
+        case "serverRequest/resolved":
+            // Codex answered the request elsewhere (its own UI, a timeout, or
+            // a cancelled turn). Drop it so a later utterance cannot approve
+            // something Codex is no longer waiting on.
+            guard let resolved = rpcID(from: params["requestId"]) else { break }
+            for (interactionID, pending) in pendingInteractions where pending.rpcID == resolved {
+                pendingInteractions.removeValue(forKey: interactionID)
+                emit(.interactionResolved(interactionID))
+            }
         case "item/agentMessage/delta": if let delta = params["delta"] as? String { emit(.responseDelta(delta)) }
         case "item/completed":
             if let item = params["item"] as? [String: Any],

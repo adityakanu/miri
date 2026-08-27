@@ -125,6 +125,7 @@ case "agents" where arguments.count >= 3 && arguments[2] == "test-codex":
             case .completed: return response
             case .failed(let message): throw NSError(domain: "MiriCodexTest", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
             case .status: break
+            case .interactionResolved: break
             }
         }
         return response
