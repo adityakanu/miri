@@ -1,6 +1,13 @@
 # Miri next-session handoff
 
-Last updated: 2026-08-27
+Last updated: 2026-08-27 (revised after the implementation cycle)
+
+> **Status:** the code-side stop-ship defects listed later in this document are
+> now fixed on `feature/release-readiness-agent-hud`. What remains are the
+> hardware/human gates: live M4 acceptance, 30 benchmark samples from the
+> current commit, and fresh-machine installation. Sections below that describe
+> a defect as outstanding are kept for context; see "Implementation cycle
+> results" for what actually changed.
 
 ## Objective
 
@@ -22,23 +29,102 @@ first-release path is:
 ## Repository state
 
 - Working directory: `/Users/adityakanu/Developer/miri`
-- Current branch: `main`
-- Current HEAD when this document was written: `a2444cd`
-- `main` is six commits ahead of `origin/main`; it has not been pushed.
-- The working tree was clean before this handoff document was created.
-- The feature branch `feature/parakeet-native-stt` points to `3024b8d`; its work
-  has already been fast-forwarded into local `main`.
+- Current branch: `feature/release-readiness-agent-hud`
+- The branch is 14 commits ahead of `main`; nothing has been pushed to
+  `origin`.
+- `swift test`: 105 tests pass, 3 skipped when speech models are absent, zero
+  warnings.
+- The arm64 Release bundle is ~57 MB; `dist/Miri-0.1.4.dmg` is ~30 MB and the
+  ZIP ~28 MB, replacing the obsolete pre-pivot artifacts.
 
-Recent commits:
+Branch commits, newest first:
 
 ```text
-a2444cd Remove editor swap file from main
-3024b8d Fix shortcut editor layout and credit FluidAudio
-854b8dd Update documentation for the CoreML-only architecture
-534c228 Remove the Python worker: all speech now runs on CoreML in-process
-6dd5fde Fix duplicate Parakeet model load and cold-start metric corruption
-b21eae3 Add on-device Parakeet transcription on the Apple Neural Engine
+6cd5ac0 Delete the inert model lifecycle profile
+975cb34 Fail closed on stale benchmark evidence and wrong-version bundles
+cc018e1 Correct release documentation to match verified state
+e2292f2 Drop Codex requests that were resolved elsewhere
+a714268 Cover multi-agent routing and approval races
+eee9108 Show live agent sessions in the menu bar with per-agent mute
+ee38e53 Classify quick tap versus hold on the push-to-talk key
+3eba2e1 Add Agent HUD presentation model
+0e27da4 Route waiting agent requests through the attention queue
+dd11ed9 Add live session directory and deterministic context resolver
+512fdf8 Gate voice download behind consent and delete both model roots
+c868b4c Add expiry-aware attention lookup and correct Hermes capabilities
+a827662 Narrow release scope and add request attention queue
+16c393f Document release readiness and multi-agent follow-up
 ```
+
+## Implementation cycle results
+
+### Release scope, now honest
+
+- Only Parakeet transcription and push-to-talk are user-selectable.
+  `STTBackend.supportedCases` and `MiriInputMode.supportedCases` drive every
+  picker, and legacy `cloud` / `wake_word` / `moonshine` configuration values
+  migrate silently instead of selecting something that cannot work.
+- The inert model lifecycle profile is deleted outright.
+- Version reporting is centralized on `MiriVersion.current`; the app plist,
+  Codex client metadata, and MCP `serverInfo` all report `0.1.4`.
+
+### Model consent and deletion
+
+- Speaking can no longer trigger a download: `startSpeech` loads the voice with
+  `allowDownload: false`, so a missing voice falls back to the system voice
+  instead of silently fetching ~520 MB mid-conversation.
+- One consent prompt now covers both models and states the real ~1 GB total.
+- `FluidSpeechSynthesizer.modelsDirectory` points at the real macOS TTS cache
+  (`~/.cache/fluidaudio/Models`), so Delete Models and Reset All Data remove
+  both FluidAudio roots instead of leaving the voice behind.
+
+### Multi-agent attention
+
+- `AttentionQueue` keys pending requests by request ID, so several agents can
+  wait at once and one agent can raise both a question and an approval.
+  Approvals sort ahead of questions.
+- Requests fail closed when they expire, when the agent disconnects or fails,
+  and when Codex reports `serverRequest/resolved` because the request was
+  answered in its own UI, cancelled, or timed out.
+- Approval still requires the exact phrase and a specific request ID; a vague
+  "yes" is rejected, and an unparseable transcript leaves the request pending.
+
+### Session routing and HUD
+
+- `LiveSessionDirectory` holds ephemeral presence that expires on its own.
+- `ContextResolver` is pure and explainable: explicit target, then a single
+  waiting request, then foreground project, then recently used session, then
+  pinned default. Two agents waiting at once returns `needsSelection` rather
+  than guessing.
+- `AgentHUDModel` derives the HUD rows; live sessions appear in the menu bar
+  with per-agent mute, and muting silences speech without hiding that an agent
+  is blocked.
+- `HotkeyGesture` classifies a quick tap as "open the HUD" and a hold as
+  speech, but any captured audio always counts as speech.
+
+### Release automation
+
+- `scripts/verify-release-evidence.sh` blocks publication unless the benchmark
+  report's revision equals the release commit and every gate passes. It
+  correctly rejects the current pre-pivot report.
+- `scripts/release-metadata.sh` resolves whichever bundle is staged, refuses a
+  bundle whose plist version differs from the release, and includes the SBOM in
+  the checksum file. The workflow installs syft and attaches all four
+  artifacts.
+
+### Still outstanding
+
+1. Live M4 acceptance on the rebuilt DMG, including repeated TTS and rapid
+   hotkey re-entry, with no new crash report.
+2. Thirty overlay and final-transcript samples captured from the current
+   commit; the existing report predates the CoreML pivot and the evidence gate
+   will refuse it.
+3. Fresh-machine installation without Xcode.
+4. Microphone denial/recovery, Bluetooth, and accessibility passes.
+5. Claude Code and Hermes remain experimental: neither has a structured
+   presence or approval bridge, and Hermes buffers its whole SSE body, so it no
+   longer advertises streaming.
+6. Push, rebuild from the pushed commit, then tag `v0.1.4`.
 
 Do not reset or discard the handoff document if it is still uncommitted at the
 start of the next session.
