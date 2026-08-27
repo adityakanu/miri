@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-27 (revised after the implementation cycle)
 
+> **Read `docs/session-handoff-2026-08-27.md` first.** It reflects the current
+> branch state, including two stop-ship fixes found by review after this
+> document's status block was written. The design sections below are still
+> accurate; the "Still outstanding" list here is stale.
+
 > **Status:** the code-side stop-ship defects listed later in this document are
 > now fixed on `feature/release-readiness-agent-hud`. What remains are the
 > hardware/human gates: live M4 acceptance, 30 benchmark samples from the
