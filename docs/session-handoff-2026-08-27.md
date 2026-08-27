@@ -7,8 +7,8 @@ and worth reading, but its "still outstanding" list is now stale.
 ## Where things stand
 
 Branch: `feature/release-readiness-agent-hud`
-HEAD: `49aeb2b`
-16 commits ahead of `main`. **Nothing pushed to `origin`.** Working tree clean.
+HEAD: `1d32ba3` (plus this doc update)
+19 commits ahead of `main`. **Nothing pushed to `origin`.** Working tree clean.
 
 - `swift test`: **105 executed, 102 passed, 3 skipped, 0 failures**, zero
   warnings. The 3 skips assert the model-*not*-installed path and skip because
@@ -22,32 +22,16 @@ Do not tag `v0.1.4` yet. See "What must happen before tagging".
 
 ## Do this first
 
-The independent review found 11 issues. Two stop-ships are fixed (`49aeb2b`);
-**two remain open**, plus should-fix items. Full report:
+The independent review found 11 issues. Three stop-ships are fixed (`49aeb2b`,
+`1d32ba3`); **one remains open**, plus should-fix items. Full report:
 `/Users/adityakanu/.hermes/cache/delegation/subagent-summary-0-20260827_165339_806636.txt`
 
-### STOP-SHIP A — approval/deny failures are swallowed; UI reports success
+### ~~STOP-SHIP A — approval/deny failures are swallowed~~ FIXED in `1d32ba3`
 
-`Sources/MiriCore/CodexAppServerAdapter.swift:285-288`
-
-```swift
-private func respond(id: RPCID, result: [String: Any]) {
-    guard let input, let data = try? JSONSerialization.data(...) else { return }
-    try? input.write(contentsOf: data + Data([0x0A]))
-}
-```
-
-`respond(to:with:)` (`:168`) removes the pending interaction *before* writing,
-then calls this non-throwing sink. If the Codex process died (`input == nil`)
-or the pipe write fails, it returns normally, `resolveApprovalTranscript`
-(`MiriApplication.swift:720-727`) takes the success path, and Miri announces
-**"Approved for <target>"**. A spoken **deny that never reached Codex is
-indistinguishable from one that did** — the worst possible failure direction on
-a permission boundary.
-
-**Fix:** make `respond(id:result:)` `throws`; propagate
-`CodexAppServerError.disconnected` and the write error; on failure re-insert the
-pending interaction and surface an error state.
+`respond(id:result:)` now throws on a dead pipe or failed write; the adapter
+re-inserts the pending interaction so it stays answerable, and Miri reports
+"Could not send your decision … The request is still waiting." Teardown keeps a
+best-effort decline. **Still needs a regression test** (see below).
 
 ### STOP-SHIP B — `ModelHub.offlineMode` is global mutable state; breaks consent both ways
 
@@ -82,11 +66,13 @@ they got in. `AttentionQueueTests` / `MultiAgentRoutingTests` test the value
 types in isolation — **none exercise `AppController`, where all four stop-ships
 live**. That is the real coverage gap.
 
-Write tests that fail if `49aeb2b` were reverted:
+Write tests that fail if `49aeb2b` / `1d32ba3` were reverted:
 - Agent with two open approvals: the transcript must answer the request captured
   at recording start, not "first pending for this target".
 - A request withdrawn *while the user speaks* must be refused, not re-routed.
 - Two agents blocked at once must not start a recording.
+- **A failed `respond` write must leave the request pending and must not report
+  success** (fake an adapter whose `respond` throws).
 
 Obstacle: the logic sits in `AppController` (`@MainActor`, ~1400 lines).
 Cheapest honest option is to extract one small pure function into `MiriCore`
