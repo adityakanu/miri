@@ -2,6 +2,13 @@ import XCTest
 @testable import MiriCore
 
 final class PreferencesTests: XCTestCase {
+    func testReleaseSupportsOnlyLocalPushToTalkSpeech() {
+        XCTAssertEqual(STTBackend.supportedCases, [.parakeet])
+        XCTAssertEqual(MiriInputMode.supportedCases, [.pushToTalk])
+        XCTAssertEqual(STTBackend.supported(configurationValue: "cloud"), .parakeet)
+        XCTAssertEqual(MiriInputMode.supported(configurationValue: "wake_word"), .pushToTalk)
+    }
+
     func testConfigurationValuesMapToTypedPreferences() {
         XCTAssertEqual(MiriInputMode(rawValue: "push_to_talk"), .pushToTalk)
         XCTAssertEqual(MiriInputMode(rawValue: "wake_word"), .wakeWord)

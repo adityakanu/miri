@@ -63,7 +63,7 @@ struct MiriSettingsView: View {
         Form {
             Section("Transcription") {
                 Picker("Speech recognition", selection: $sttBackend) {
-                    ForEach(STTBackend.allCases) { Text($0.displayName).tag($0) }
+                    ForEach(STTBackend.supportedCases) { Text($0.displayName).tag($0) }
                 }
                 .pickerStyle(.radioGroup)
                 Text(sttBackend.detail).font(.caption).foregroundStyle(.secondary)
@@ -194,17 +194,12 @@ struct MiriSettingsView: View {
                 }
                 .accessibilityElement(children: .combine)
                 Picker("Input mode", selection: $inputMode) {
-                    ForEach(MiriInputMode.allCases) { Text($0.displayName).tag($0) }
+                    ForEach(MiriInputMode.supportedCases) { Text($0.displayName).tag($0) }
                 }
                 .onChange(of: inputMode) { _, value in actions.setInputMode(value) }
                 Text(inputMode.detail).font(.caption).foregroundStyle(.secondary)
             }
             Section("Speech models") {
-                Picker("Model profile", selection: $modelProfile) {
-                    ForEach(ModelLifecycleProfile.allCases) { Text($0.displayName).tag($0) }
-                }
-                .onChange(of: modelProfile) { _, value in actions.setModelProfile(value) }
-                Text(modelProfile.detail).font(.caption).foregroundStyle(.secondary)
                 Label(speechHealth, systemImage: "waveform.badge.magnifyingglass")
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Button("Install or Repair Models…") { actions.installModels() }
@@ -403,7 +398,7 @@ struct MiriOnboardingView: View {
         case .interaction:
             OnboardingPage(icon: "keyboard", title: "Choose how to speak", detail: "Push to Talk is the recommended default and never listens until you hold the shortcut.") {
                 Picker("Input mode", selection: $inputMode) {
-                    ForEach(MiriInputMode.allCases) { Text($0.displayName).tag($0) }
+                    ForEach(MiriInputMode.supportedCases) { Text($0.displayName).tag($0) }
                 }.pickerStyle(.radioGroup)
                     .onChange(of: inputMode) { _, value in actions.setInputMode(value) }
                 LabeledContent("Shortcut") {
@@ -418,16 +413,6 @@ struct MiriOnboardingView: View {
                     }
                 }
                 Text(inputMode.detail).font(.caption).foregroundStyle(.secondary)
-            }
-        case .models:
-            OnboardingPage(icon: "cpu", title: "Model performance", detail: "Miri uses local speech models. You can change how long they remain in memory.") {
-                Picker("Model profile", selection: $modelProfile) {
-                    ForEach(ModelLifecycleProfile.allCases) { Text($0.displayName).tag($0) }
-                }.pickerStyle(.radioGroup)
-                    .onChange(of: modelProfile) { _, value in actions.setModelProfile(value) }
-                Text(modelProfile.detail).font(.caption).foregroundStyle(.secondary)
-                Text("Miri asks before downloading models and shows download progress.").font(.caption).foregroundStyle(.secondary)
-                Button("Install or Repair Models…") { actions.installModels() }
             }
         case .targets:
             OnboardingPage(icon: "arrow.triangle.branch", title: "Agent targets", detail: "A target tells Miri where to deliver your transcript.") {

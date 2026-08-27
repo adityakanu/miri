@@ -25,7 +25,7 @@ for try await line in FileHandle.standardInput.bytes.lines {
         output = response(id: id, result: [
             "protocolVersion": "2025-06-18",
             "capabilities": ["tools": [:]],
-            "serverInfo": ["name": "miri-mcp", "version": "0.1.4"],
+            "serverInfo": ["name": "miri-mcp", "version": MiriVersion.current],
         ])
     case "notifications/initialized":
         continue

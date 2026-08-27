@@ -87,7 +87,7 @@ public actor CodexAppServerAdapter: AgentAdapter {
             outputHandle = stdout.fileHandleForReading; errorHandle = error.fileHandleForReading
             read(stdout.fileHandleForReading, isError: false); read(error.fileHandleForReading, isError: true)
             _ = try await request("initialize", params: [
-                "clientInfo": ["name": "miri", "title": "Miri", "version": "0.1.0"],
+                "clientInfo": ["name": "miri", "title": "Miri", "version": MiriVersion.current],
                 "capabilities": ["experimentalApi": true],
             ])
             trace("initialized")

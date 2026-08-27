@@ -4,6 +4,11 @@ public enum MiriInputMode: String, CaseIterable, Codable, Identifiable, Sendable
     case pushToTalk = "push_to_talk"
     case wakeWord = "wake_word"
 
+    public static let supportedCases: [Self] = [.pushToTalk]
+    public static func supported(configurationValue: String) -> Self {
+        supportedCases.first { $0.rawValue == configurationValue } ?? .pushToTalk
+    }
+
     public var id: String { rawValue }
 
     public var displayName: String {
@@ -43,7 +48,6 @@ public enum FirstRunStep: Int, CaseIterable, Identifiable, Sendable {
     case welcome
     case microphone
     case interaction
-    case models
     case targets
     case privacy
 

@@ -4,6 +4,10 @@ import Foundation
 /// OpenAI-compatible endpoint (hosted or a local server such as whisper.cpp).
 public enum STTBackend: String, CaseIterable, Identifiable, Sendable {
     case parakeet, cloud
+    public static let supportedCases: [Self] = [.parakeet]
+    public static func supported(configurationValue: String) -> Self {
+        supportedCases.first { $0.rawValue == configurationValue } ?? .parakeet
+    }
     public var id: String { rawValue }
     public var displayName: String {
         switch self {

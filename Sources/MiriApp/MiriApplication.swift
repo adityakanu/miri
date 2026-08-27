@@ -172,12 +172,12 @@ private struct PendingAgentInteraction: Sendable {
         if activeTargetID == nil || !enabledTargetIDs.contains(activeTargetID!) || activeTargetID == previousDefault {
             activeTargetID = configuration.defaultTarget
         }
-        inputMode = MiriInputMode(rawValue: configuration.inputMode) ?? .pushToTalk
+        inputMode = MiriInputMode.supported(configurationValue: configuration.inputMode)
         if case .string(let value)? = configuration.sections["hotkeys"]?["active_target"] { activeHotkey = value }
         else { activeHotkey = "option+space" }
         configureHotkeys(for: configuration.targets.filter(\.enabled))
         if case .string(let profile)? = configuration.sections["audio"]?["profile"] { modelProfile = ModelLifecycleProfile(rawValue: profile) ?? .responsive }
-        if case .string(let provider)? = configuration.sections["stt"]?["provider"] { sttBackend = STTBackend(configurationValue: provider) }
+        if case .string(let provider)? = configuration.sections["stt"]?["provider"] { sttBackend = STTBackend.supported(configurationValue: provider) }
         else { sttBackend = .parakeet }
         if sttBackend == .parakeet {
             Task { [weak self] in await self?.loadParakeetIfInstalled() }
