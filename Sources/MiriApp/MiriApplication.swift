@@ -90,6 +90,8 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var router = TargetRouter(registry: .init(targets: []))
     private var currentConfiguration = MiriConfiguration()
     private var recordingSnapshot: RecordingTargetSnapshot?
+    /// The exact request this utterance answers, captured when recording began.
+    private var recordingRequestID: String?
     private var recordingSessionID: String?
     private var speechSessionID: String?
     private var speechInterruptible = true
@@ -564,23 +566,42 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
         do {
             let routed = try router.snapshot(dedicatedHotkey: dedicatedHotkey, activeTargetID: activeTargetID)
-            let waiting = attention.pending()
-            // A held hotkey answers whoever is waiting, unless the user aimed
-            // at a specific target with a dedicated shortcut.
-            if dedicatedHotkey == nil,
-               !waiting.contains(where: { $0.target.id == routed.target.id }),
-               let next = waiting.first {
-                recordingSnapshot = .init(target: next.target, source: .activeSelection)
-            } else { recordingSnapshot = routed }
+            if dedicatedHotkey != nil {
+                // A dedicated shortcut is an explicit aim: honour it verbatim.
+                recordingSnapshot = routed
+                recordingRequestID = nil
+            } else {
+                let waiting = attention.pending()
+                switch ContextResolver.resolve(
+                    attention: waiting,
+                    pinnedDefault: routed.target
+                ) {
+                case .resolved(let resolved, let reason):
+                    recordingSnapshot = reason == .pinnedDefault ? routed : resolved
+                    // Bind the utterance to the exact request it answers, so a
+                    // delayed transcript cannot approve a different one.
+                    recordingRequestID = reason == .pendingRequest ? waiting.first?.id : nil
+                case .needsSelection:
+                    // Several agents are blocked. Guessing here could approve
+                    // the wrong command, so ask instead of recording.
+                    lastStatus = "Several agents need you. Choose one from the Miri menu, then speak."
+                    presentOverlay(.needsInput(label: "Choose an agent")); dismissOverlay(after: 2.5)
+                    recordingSnapshot = nil; recordingRequestID = nil
+                    state = machine.handle(.cancel)
+                    return
+                case .noTarget:
+                    recordingSnapshot = routed; recordingRequestID = nil
+                }
+            }
         }
-        catch { recordingSnapshot = nil }
+        catch { recordingSnapshot = nil; recordingRequestID = nil }
         let session = UUID().uuidString; recordingSessionID = session; wakeUtterance = triggeredByWakeWord
         recordingBuffer.reset()
         do {
             if usesParakeet { try await parakeet.startStream() }
             if requiresHeldHotkey, (!hotkeyIsHeld || listeningAttemptID != attemptID) {
                 await parakeet.cancel()
-                recordingSessionID = nil; recordingSnapshot = nil
+                recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil
                 return
             }
             // Samples go straight to the on-device model: no IPC, no
@@ -618,7 +639,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
             audioDiagnostics = String(format: "Audio %.1fs · RMS %.3f · peak %.2f", metrics.durationSeconds, metrics.rms, metrics.peak)
             if let warning = metrics.qualityMessage {
                 audioSenderTask?.cancel(); audioSenderTask = nil
-                recordingSessionID = nil; recordingSnapshot = nil; recordingReleasedAt = nil
+                recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; recordingReleasedAt = nil
                 Task { [parakeet] in await parakeet.cancel() }
                 lastStatus = warning; state = machine.handle(.failure(warning)); presentOverlay(.error(message: warning)); dismissOverlay(after: 2)
                 return
@@ -656,10 +677,24 @@ private final class AudioChunkPipe: @unchecked Sendable {
         guard let snapshot = recordingSnapshot else {
             lastStatus = "No target configured. Transcript: \(text)"; presentOverlay(.error(message: "No target configured")); state = .failed("No target"); return
         }
-        if let pending = attention.pending().first(where: { $0.target.id == snapshot.target.id && $0.adapterBacked }) {
+        // Approval is bound to the request captured when recording began, not
+        // merely to its target: an agent can have several requests open, and
+        // answering the wrong one could run the wrong command.
+        if let requestID = recordingRequestID,
+           let pending = attention.item(requestID: requestID), pending.adapterBacked {
             await resolveApprovalTranscript(text, pending: pending)
-            recordingSessionID = nil; recordingSnapshot = nil
+            recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil
             if inputMode == .wakeWord { await startWakeMonitoring(after: 1.1) }
+            return
+        }
+        if let requestID = recordingRequestID, attention.item(requestID: requestID) == nil {
+            // The request was withdrawn, expired, or answered elsewhere while
+            // the user was speaking. Fail closed rather than re-routing.
+            recordingRequestID = nil
+            lastStatus = "That request is no longer waiting. Nothing was sent."
+            presentOverlay(.error(message: "Request no longer waiting")); dismissOverlay(after: 2)
+            recordingSessionID = nil; recordingSnapshot = nil
+            state = machine.handle(.delivered)
             return
         }
         let sendingLabel = showTranscriptPreview ? "\(snapshot.target.name) · \(String(text.prefix(80)))" : snapshot.target.name
@@ -734,7 +769,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
         hotkeyIsHeld = false; listeningAttemptID = nil
-        recordingSessionID = nil; recordingSnapshot = nil; speechSessionID = nil; wakeSessionID = nil
+        recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; speechSessionID = nil; wakeSessionID = nil
         Task { [synth] in await synth.stop() }
         logger.log(.error, "interaction failed: \(error.localizedDescription)")
         state = machine.handle(.failure(error.localizedDescription)); presentOverlay(.error(message: error.localizedDescription))
@@ -856,7 +891,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         Task { [parakeet] in await parakeet.cancel() }
         Task { [synth] in await synth.stop() }
         pcmPlayer?.stop(); speechSessionID = nil; speechInterruptible = true; speechPriority = 0
-        recordingSessionID = nil; recordingSnapshot = nil; hotkeys?.enableEscapeCancellation(false)
+        recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; hotkeys?.enableEscapeCancellation(false)
         state = machine.handle(.cancel); presentOverlay(.cancelled); dismissOverlay(after: 0.25)
         if inputMode == .wakeWord { Task { await startWakeMonitoring(after: 0.5) } }
     }
