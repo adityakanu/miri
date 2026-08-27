@@ -35,12 +35,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
 }
 
-private struct PendingAgentInteraction: Sendable {
-    let request: AgentInteractionRequest
-    let target: TargetDefinition
-    let adapterBacked: Bool
-}
-
 @MainActor final class AppController: NSObject, ObservableObject {
     @Published var state: InteractionState = .idle
     @Published var lastStatus = "Miri is ready"
@@ -118,7 +112,7 @@ private struct PendingAgentInteraction: Sendable {
     private var listeningAttemptID: UUID?
     private var recordingTimeoutTask: Task<Void, Never>?
     private var speechTimeoutTask: Task<Void, Never>?
-    private var pendingAgentInteractions: [String: PendingAgentInteraction] = [:]
+    private var attention = AttentionQueue()
 
     override init() {
         super.init(); synthesizer.delegate = speechDelegate
@@ -255,6 +249,13 @@ private struct PendingAgentInteraction: Sendable {
         switch event {
         case .status(let status):
             targetStatuses[target.id] = status
+            // A disconnected or failed agent is no longer waiting on an
+            // answer; leaving its requests pending would let a later utterance
+            // approve something nothing is listening for.
+            if status == .disconnected || status == .failed {
+                attention.removeAll(targetID: target.id)
+                pendingAgentPrompt = attention.pending().first?.request.title
+            }
             if status == .busy, activeTargetID == target.id { presentOverlay(.waiting(target: target.name)) }
         case .responseDelta(let delta):
             responseBuffers[target.id, default: ""] += delta
@@ -267,8 +268,7 @@ private struct PendingAgentInteraction: Sendable {
             lastAgentName = target.name
             scheduleAgentCompletionFallback(for: target, delay: 2)
         case .interactionRequested(let request):
-            let pending = PendingAgentInteraction(request: request, target: target, adapterBacked: true)
-            pendingAgentInteractions[target.id] = pending
+            attention.add(.init(request: request, target: target, adapterBacked: true))
             pendingAgentPrompt = request.title
             lastStatus = "\(request.title). Hold \(activeHotkey) and say approve request or deny request."
             logger.log("agent interaction requested target=\(target.id) kind=\(request.kind.rawValue)")
@@ -278,6 +278,8 @@ private struct PendingAgentInteraction: Sendable {
         case .failed(let message):
             agentCompletionTimeoutTasks.removeValue(forKey: target.id)?.cancel()
             responseBuffers.removeValue(forKey: target.id); finalResponses.removeValue(forKey: target.id)
+            attention.removeAll(targetID: target.id)
+            pendingAgentPrompt = attention.pending().first?.request.title
             targetStatuses[target.id] = .failed
             lastStatus = "\(target.name): \(message)"
             logger.log(.error, "agent turn failed target=\(target.id): \(message)")
@@ -310,7 +312,7 @@ private struct PendingAgentInteraction: Sendable {
         if response.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") {
             let spokenQuestion = AgentSpeechFormatter.spokenText(from: response, maxCharacters: agentSpeechLimit) ?? "\(target.name) needs your answer"
             let request = AgentInteractionRequest(kind: .question, title: spokenQuestion)
-            pendingAgentInteractions[target.id] = .init(request: request, target: target, adapterBacked: false)
+            attention.add(.init(request: request, target: target, adapterBacked: false))
             pendingAgentPrompt = spokenQuestion
             activeTargetID = target.id
             lastStatus = "\(target.name) needs your answer. Hold \(activeHotkey) to reply."
@@ -557,10 +559,13 @@ private struct PendingAgentInteraction: Sendable {
         }
         do {
             let routed = try router.snapshot(dedicatedHotkey: dedicatedHotkey, activeTargetID: activeTargetID)
+            let waiting = attention.pending()
+            // A held hotkey answers whoever is waiting, unless the user aimed
+            // at a specific target with a dedicated shortcut.
             if dedicatedHotkey == nil,
-               pendingAgentInteractions[routed.target.id] == nil,
-               let pending = pendingAgentInteractions.values.max(by: { $0.request.createdAt < $1.request.createdAt }) {
-                recordingSnapshot = .init(target: pending.target, source: .activeSelection)
+               !waiting.contains(where: { $0.target.id == routed.target.id }),
+               let next = waiting.first {
+                recordingSnapshot = .init(target: next.target, source: .activeSelection)
             } else { recordingSnapshot = routed }
         }
         catch { recordingSnapshot = nil }
@@ -646,7 +651,7 @@ private struct PendingAgentInteraction: Sendable {
         guard let snapshot = recordingSnapshot else {
             lastStatus = "No target configured. Transcript: \(text)"; presentOverlay(.error(message: "No target configured")); state = .failed("No target"); return
         }
-        if let pending = pendingAgentInteractions[snapshot.target.id], pending.adapterBacked {
+        if let pending = attention.pending().first(where: { $0.target.id == snapshot.target.id && $0.adapterBacked }) {
             await resolveApprovalTranscript(text, pending: pending)
             recordingSessionID = nil; recordingSnapshot = nil
             if inputMode == .wakeWord { await startWakeMonitoring(after: 1.1) }
@@ -692,12 +697,11 @@ private struct PendingAgentInteraction: Sendable {
     }
 
     private func clearQuestionIfNeeded(for targetID: String) {
-        guard pendingAgentInteractions[targetID]?.request.kind == .question else { return }
-        pendingAgentInteractions.removeValue(forKey: targetID)
-        pendingAgentPrompt = pendingAgentInteractions.values.max(by: { $0.request.createdAt < $1.request.createdAt })?.request.title
+        attention.removeQuestions(targetID: targetID)
+        pendingAgentPrompt = attention.pending().first?.request.title
     }
 
-    private func resolveApprovalTranscript(_ transcript: String, pending: PendingAgentInteraction) async {
+    private func resolveApprovalTranscript(_ transcript: String, pending: AttentionItem) async {
         guard let response = VoiceApprovalParser.parse(transcript) else {
             state = machine.handle(.delivered)
             lastStatus = "Approval unchanged. Say exactly: approve request, or deny request."
@@ -709,8 +713,8 @@ private struct PendingAgentInteraction: Sendable {
         }
         do {
             try await adapter.respond(to: pending.request.id, with: response)
-            pendingAgentInteractions.removeValue(forKey: pending.target.id)
-            pendingAgentPrompt = pendingAgentInteractions.values.max(by: { $0.request.createdAt < $1.request.createdAt })?.request.title
+            attention.remove(id: pending.request.id)
+            pendingAgentPrompt = attention.pending().first?.request.title
             state = machine.handle(.delivered)
             let approved = response == .approve
             lastStatus = approved ? "Approved for \(pending.target.name)" : "Denied for \(pending.target.name)"
@@ -737,7 +741,7 @@ private struct PendingAgentInteraction: Sendable {
         catch { lastStatus = error.localizedDescription; return .init(accepted: false, message: error.localizedDescription) }
         if request.kind == .question, let target = resolveStatusTarget(request) {
             let interaction = AgentInteractionRequest(kind: .question, title: request.text)
-            pendingAgentInteractions[target.id] = .init(request: interaction, target: target, adapterBacked: false)
+            attention.add(.init(request: interaction, target: target, adapterBacked: false))
             pendingAgentPrompt = request.text
             activeTargetID = target.id
             logger.log("agent question bound target=\(target.id)")

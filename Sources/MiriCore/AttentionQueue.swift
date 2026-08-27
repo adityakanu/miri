@@ -24,43 +24,50 @@ public struct AttentionItem: Identifiable, Equatable, Sendable {
     }
 }
 
-public actor AttentionQueue {
+/// Everything currently waiting on the user, keyed by request ID.
+///
+/// Keying by request rather than by target is the point: one agent can raise a
+/// question and an approval at once, and two agents can wait simultaneously.
+/// A value type so the main-actor UI can hold it without actor hops.
+public struct AttentionQueue: Equatable, Sendable {
     private var itemsByID: [String: AttentionItem] = [:]
 
     public init() {}
 
-    public var pending: [AttentionItem] {
-        pending(at: .now)
+    public var isEmpty: Bool { itemsByID.isEmpty }
+
+    /// Unexpired requests, approvals first, then oldest first.
+    public func pending(at date: Date = .now) -> [AttentionItem] {
+        itemsByID.values
+            .filter { !$0.isExpired(at: date) }
+            .sorted(by: Self.precedes)
     }
 
-    public func pending(at date: Date) -> [AttentionItem] {
-        removeExpired(at: date)
-        return itemsByID.values.sorted(by: Self.precedes)
-    }
-
+    /// Returns the request only while it is still answerable, so a delayed
+    /// transcript cannot approve something the agent already withdrew.
     public func item(requestID: String, at date: Date = .now) -> AttentionItem? {
-        guard let item = itemsByID[requestID] else { return nil }
-        guard !item.isExpired(at: date) else {
-            itemsByID.removeValue(forKey: requestID)
-            return nil
-        }
+        guard let item = itemsByID[requestID], !item.isExpired(at: date) else { return nil }
         return item
     }
 
-    public func add(_ item: AttentionItem) {
+    public mutating func add(_ item: AttentionItem) {
         itemsByID[item.id] = item
     }
 
     @discardableResult
-    public func remove(id: String) -> AttentionItem? {
+    public mutating func remove(id: String) -> AttentionItem? {
         itemsByID.removeValue(forKey: id)
     }
 
-    public func removeAll(targetID: String) {
+    public mutating func removeAll(targetID: String) {
         itemsByID = itemsByID.filter { $0.value.target.id != targetID }
     }
 
-    private func removeExpired(at date: Date) {
+    public mutating func removeQuestions(targetID: String) {
+        itemsByID = itemsByID.filter { $0.value.target.id != targetID || $0.value.request.kind != .question }
+    }
+
+    public mutating func removeExpired(at date: Date = .now) {
         itemsByID = itemsByID.filter { !$0.value.isExpired(at: date) }
     }
 
