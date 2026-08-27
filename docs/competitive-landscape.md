@@ -43,7 +43,7 @@ Miri runs both directions of the loop on the Apple Neural Engine: Parakeet for
 transcription, PocketTTS for speech output, both in-process. No audio leaves
 the machine and none of it crosses a process boundary. It works on a plane, on
 a locked-down network, or under a policy that forbids sending source-adjacent
-speech to third parties. The whole application is 22 MB.
+speech to third parties. The whole application is about 57 MB.
 
 **Why someone would choose Miri instead:**
 

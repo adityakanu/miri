@@ -32,9 +32,10 @@ there is no Python in the product.
   supported through the neutral interaction contract.
 - Private local socket only; no HTTP listener, analytics, or persistent
   transcript history. Failed delivery uses a memory-only outbox.
-- The app bundle is ~22 MB and arm64-only. No inference runtime or model
-  weights are embedded; Parakeet and PocketTTS models are downloaded on first
-  use after explicit consent.
+- The packaged app bundle is ~57 MB and arm64-only, including the `miri` and
+  `miri-mcp` helpers. No inference runtime or model weights are embedded;
+  Parakeet and PocketTTS models are downloaded on first use, together, after a
+  single explicit consent prompt covering the full ~1 GB.
 
 ## Critical crash fixed on 2026-07-18
 
@@ -63,19 +64,19 @@ removed when speech moved to CoreML.
 
 ## Verified state
 
-The corrected self-contained artifacts were rebuilt on 2026-07-18:
+Artifacts were rebuilt from the current branch on 2026-08-27:
 
-- `dist/Miri-0.1.4.dmg` and `.zip` (the pre-pivot artifacts were ~965 MB and
-  ~656 MB; after removing Python the Release app is ~22 MB, so these must be
-  rebuilt and re-measured)
+- `dist/Miri-0.1.4.dmg` (~30 MB) and `dist/Miri-0.1.4.zip` (~28 MB), replacing
+  the pre-pivot ~965 MB / ~656 MB artifacts
 - `dist/Miri-0.1.4.sha256`
-- staged application: `.preview/Miri.app`
+- staged application: `.preview/Miri.app` (~57 MB)
 
 Completed checks:
 
-- `swift test`: 47 tests pass.
+- `swift test`: 105 tests pass, 3 skipped when speech models are absent.
 - The new off-main-actor playback regression test passes.
 - `codesign --verify --deep --strict .preview/Miri.app` passes.
+- The staged bundle is arm64-only.
 - The bundle signature remains valid after first run; nothing writes into the
   app bundle.
 - Both DMG and ZIP match `dist/Miri-0.1.4.sha256`.
@@ -100,7 +101,7 @@ The user must test the corrected artifact rather than the installed `0.1.3`:
 2. Open `dist/Miri-0.1.4.dmg`.
 3. Drag `Miri.app` to Applications.
 4. Use **System Settings → Privacy & Security → Open Anyway** when Gatekeeper
-   blocks the unsigned community build.
+   blocks the ad-hoc signed community build.
 5. Confirm the app reports version `0.1.4`.
 6. Complete voice → Codex → spoken response at least five consecutive times.
 7. Rapidly press/release Option-Space, then press it again, repeatedly. Confirm
@@ -139,24 +140,43 @@ it needs Accessibility permission and does not replace human speech evidence.
 
 ### Release blockers
 
-1. Pass the corrected-DMG acceptance test above, including repeated TTS and
-   rapid hotkey re-entry, with no new crash report.
+These all require real hardware or a human; the code-side blockers are done.
+
+1. Pass the acceptance test above on the freshly built DMG, including repeated
+   TTS and rapid hotkey re-entry, with no new crash report.
 2. Collect 30 human overlay and final-transcript samples and produce a complete
-   passing M4 benchmark report.
-3. Test installation on a fresh macOS user/machine without Xcode; verify model
-   consent/download, offline use after download, Codex MCP setup, and
-   STT → agent → TTS.
+   passing M4 benchmark report from the current commit. The existing report
+   predates the CoreML pivot and must not be reused.
+3. Test installation on a fresh macOS user/machine without Xcode; verify the
+   combined model consent/download, offline use afterwards, Codex MCP setup,
+   and STT → agent → TTS.
 4. Exercise microphone permission denial/recovery, Bluetooth input/output, and
    at least the primary accessibility path (Reduce Motion and VoiceOver labels).
-5. Live-test Claude Code and Hermes, or clearly label them experimental and
+5. Live-test Claude Code and Hermes, or ship them labelled experimental with
    Codex as the only validated adapter for `0.1.4`.
 6. Review model/runtime licenses (FluidAudio Apache-2.0, Parakeet CC-BY-4.0),
    bundled notices, and the generated SBOM.
-7. Commit and push all intended changes. Then rebuild from that exact commit and
-   verify version, signature, DMG layout, checksums, and clean installation.
+7. Push all intended changes, rebuild from that exact commit, and re-verify
+   version, signature, DMG layout, checksums, and clean installation.
 8. Only after the gates pass, create `v0.1.4`, publish one GitHub Release, and
    attach DMG, ZIP, checksum, SBOM, release notes, known limitations, supported
    hardware, and benchmark evidence.
+
+### Completed in this cycle
+
+- Only Parakeet transcription and push-to-talk are user-selectable; the
+  non-functional cloud backend and unavailable wake word are no longer offered,
+  and the inert model-profile control is gone.
+- Speaking can no longer trigger a silent ~520 MB voice download; one consent
+  prompt covers both models, and deleting models now removes both FluidAudio
+  roots instead of leaving the voice behind.
+- Several agents can wait at once: pending requests are keyed by request ID,
+  approvals outrank questions, and requests resolved in the agent's own UI,
+  withdrawn, or belonging to a failed agent are dropped fail-closed.
+- Routing no longer requires opening Settings: a waiting agent claims the next
+  utterance, competing agents force an explicit choice, and live sessions with
+  per-agent mute are listed in the menu bar.
+- Version reporting is centralized on `MiriVersion.current`.
 
 ### Known limitations to disclose
 
@@ -171,6 +191,8 @@ it needs Accessibility permission and does not replace human speech evidence.
   picker yet.
 - Wake word is unavailable: it lived in the removed Python worker. Push-to-talk
   is the supported input mode.
+- Cloud transcription is not available in `0.1.4`. The provider was removed with
+  the Python worker and is not reimplemented natively yet.
 
 ## Working tree warning
 
