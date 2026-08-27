@@ -8,7 +8,6 @@ DMG="$ROOT/dist/Miri-$VERSION.dmg"
 SBOM="$ROOT/dist/Miri-$VERSION.spdx.json"
 
 [[ -f "$DMG" ]] || { echo "usage: $0 <version> (DMG must already exist)" >&2; exit 2; }
-command -v syft >/dev/null || { echo "syft is required to generate the SPDX SBOM" >&2; exit 2; }
 # The community channel stages to .preview, the notarized channel to .release.
 # Community is the shipping channel, so it wins when both are staged; either
 # channel can override by passing the bundle explicitly as $2.
@@ -29,6 +28,10 @@ APP_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
   echo "staged $APP reports version '$APP_VERSION', expected '$VERSION'" >&2
   exit 1
 }
+
+# Checked after the version gate so a mismatched bundle fails for the right
+# reason on machines that do have syft.
+command -v syft >/dev/null || { echo "syft is required to generate the SPDX SBOM" >&2; exit 2; }
 
 syft "dir:$APP" -o "spdx-json=$SBOM"
 (
