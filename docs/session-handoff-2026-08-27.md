@@ -22,57 +22,143 @@ Do not tag `v0.1.4` yet. See "What must happen before tagging".
 
 ## Do this first
 
-Two review findings are still open. Both are small and well understood.
+The independent review found 11 issues. Two stop-ships are fixed (`49aeb2b`);
+**two remain open**, plus should-fix items. Full report:
+`/Users/adityakanu/.hermes/cache/delegation/subagent-summary-0-20260827_165339_806636.txt`
 
-### 1. Add the regression tests for the approval fix (highest value)
+### STOP-SHIP A — approval/deny failures are swallowed; UI reports success
 
-Commit `49aeb2b` fixed two stop-ships but **ships without tests**, which is
-exactly how they got in. The existing `MultiAgentRoutingTests` passed against
-the *pure* `ContextResolver` while the app used dead hand-rolled code — passing
-tests against an unused path.
+`Sources/MiriCore/CodexAppServerAdapter.swift:285-288`
+
+```swift
+private func respond(id: RPCID, result: [String: Any]) {
+    guard let input, let data = try? JSONSerialization.data(...) else { return }
+    try? input.write(contentsOf: data + Data([0x0A]))
+}
+```
+
+`respond(to:with:)` (`:168`) removes the pending interaction *before* writing,
+then calls this non-throwing sink. If the Codex process died (`input == nil`)
+or the pipe write fails, it returns normally, `resolveApprovalTranscript`
+(`MiriApplication.swift:720-727`) takes the success path, and Miri announces
+**"Approved for <target>"**. A spoken **deny that never reached Codex is
+indistinguishable from one that did** — the worst possible failure direction on
+a permission boundary.
+
+**Fix:** make `respond(id:result:)` `throws`; propagate
+`CodexAppServerError.disconnected` and the write error; on failure re-insert the
+pending interaction and surface an error state.
+
+### STOP-SHIP B — `ModelHub.offlineMode` is global mutable state; breaks consent both ways
+
+`FluidSpeechSynthesizer.swift:72-77` and `ParakeetTranscriber.swift:72-78`
+
+```swift
+if !allowDownload { guard Self.isInstalled else { throw ... }; ModelHub.offlineMode = true }
+defer { ModelHub.offlineMode = false }
+```
+
+`ModelHub.offlineMode` proxies `HFClient.offlineMode`, a
+`nonisolated(unsafe) static var` whose documented contract is "set once at
+startup". Two independent actors flip it per-load:
+
+- An agent reply arriving *during* a consented download calls
+  `synth.load(allowDownload: false)` → sets `offlineMode = true` → **the
+  user-consented Parakeet download fails** with `networkDisabled`.
+- The `defer` runs unconditionally, including when `allowDownload == true`, so a
+  consented loader **clears the offline flag while an unconsented loader is
+  still fetching** — the exact bypass this branch set out to close.
+- Also a Swift 6 data race: unsynchronised cross-actor writes to a
+  `nonisolated(unsafe)` global.
+
+**Fix:** set `offlineMode = true` once at launch; clear it only for the duration
+of an explicitly consented install, serialised through one actor. In `defer`,
+restore the *previous* value — never hardcode `false`.
+
+### Then: regression tests for the approval path
+
+Commit `49aeb2b` fixed two stop-ships but **ships without tests**, which is how
+they got in. `AttentionQueueTests` / `MultiAgentRoutingTests` test the value
+types in isolation — **none exercise `AppController`, where all four stop-ships
+live**. That is the real coverage gap.
 
 Write tests that fail if `49aeb2b` were reverted:
+- Agent with two open approvals: the transcript must answer the request captured
+  at recording start, not "first pending for this target".
+- A request withdrawn *while the user speaks* must be refused, not re-routed.
+- Two agents blocked at once must not start a recording.
 
-- An agent with two open approvals: the transcript must answer the request
-  captured when recording began, never "the first pending one for this target".
-- A request that expires/is withdrawn *while the user is speaking* must be
-  refused, not re-routed to another request or delivered as a normal message.
-- Two agents blocked at once must not start a recording at all.
+Obstacle: the logic sits in `AppController` (`@MainActor`, ~1400 lines).
+Cheapest honest option is to extract one small pure function into `MiriCore`
+(e.g. `ApprovalBinding.resolve(requestID:queue:)`) and test that. Keep the diff
+tight; do not reshape the controller.
 
-The obstacle: this logic lives in `AppController` (`Sources/MiriApp/
-MiriApplication.swift`, `@MainActor`, ~1400 lines) and is not directly
-testable. Cheapest honest option is to extract the decision into a small pure
-function in `MiriCore` — something like
-`ApprovalBinding.resolve(requestID:queue:) -> AttentionItem?` plus the
-`startListening` branch — and test that. Do **not** reshape the whole
-controller; keep the diff tight.
+Relevant code: `MiriApplication.swift:566-597` (routing, sets
+`recordingRequestID`), `:678-706` (request-ID lookup + fail-closed branch),
+`:94` (declaration).
 
-Relevant code:
-- `MiriApplication.swift:566-597` — routing via `ContextResolver`, sets
-  `recordingRequestID`.
-- `MiriApplication.swift:678-706` — approval lookup by request ID, fail-closed
-  branch.
-- `MiriApplication.swift:94` — `recordingRequestID` declaration.
+### Should-fix (review numbering)
 
-### 2. Finish removing cloud STT
+5. **Per-agent mute is bypassed on the path agents actually use.**
+   `MiriApplication.swift:781-785` gates on `mutedTargetIDs` only when
+   `targetID` is passed, but the MCP path `speak(_:)` at `:763` calls
+   `startSpeech` with no target — so an agent speaking through `miri-mcp` is
+   never muted. Move the check into `startSpeech`.
+6. **Request expiry is implemented, tested, and never used.** All three
+   production sites pass `expiresAt: nil` (`:272, :320, :749`), so `isExpired`
+   is always false and `removeExpired` is uncalled. An agent that hangs without
+   emitting anything waits forever and can capture a later utterance. Pass
+   `createdAt + 300` and sweep before each `pending()` read.
+7. **The HUD shows configured targets, not live sessions.** `:1082-1090`
+   fabricates a `SessionPresence` per enabled target with `lastActiveAt: now`;
+   `LiveSessionDirectory` is never instantiated in Sources. Every row shares the
+   same timestamp, so the recency tiebreak degenerates to alphabetical order.
+   Either feed a real directory from `.status` events or rename the section to
+   "Agent targets" and delete the unused type.
+8. **`HotkeyGesture` is dead code.** Referenced only by its tests; no
+   press-duration measurement and no `.openHUD` handler exist. The commit ships
+   a pure function, not the behaviour. Wire it using the existing
+   `hotkeyPressedAt`, or delete it and the claim.
+9. **Docs contradict each other** (see "Doc fixes" below).
+10. **Cloud STT still reachable via CLI/config.** `MiriCLI/main.swift:65`
+    `miri models use-cloud` writes a setting the app silently ignores;
+    unreachable `.cloud` branches remain in `MiriApplication.swift:956-999` and
+    `SettingsViews.swift:93-299`; `STTBackendTests.swift:12` still asserts
+    pre-narrowing behaviour.
 
-Half-removed, flagged should-fix by review:
+### Doc fixes (all verified wrong)
 
-- `Sources/MiriCLI/main.swift:65` — `miri models use-cloud` still writes
-  `provider = "cloud"`, which the app now silently coerces to `.parakeet`.
-  Remove the subcommand or make it exit with a clear error.
-- `MiriApplication.swift` ~`956-999` and `SettingsViews.swift` ~`93-299` —
-  unreachable `sttBackend == .cloud` branches.
-- `Tests/MiriCoreTests/STTBackendTests.swift:12` still asserts the
-  *pre-narrowing* `STTBackend(configurationValue: "cloud") == .cloud`. Add a
-  test asserting `STTBackend.supported(configurationValue: "cloud") == .parakeet`
-  so the narrowing has a negative test.
+- `AGENTS.md:21-23` and `docs/competitive-landscape.md:42` — claim **both**
+  models run on the ANE. Contradicted by `docs/architecture.md:17-19` and
+  `README.md:81-83` *on this same branch*. PocketTTS is GPU-backed.
+- `AGENTS.md:24-25` lists opt-in cloud transcription as current, while
+  `AGENTS.md:196` and README say it's unavailable in 0.1.4.
+- `README.md:195` / `docs/release-checklist.md:8` — "98 executed / 95 passing".
+  Real: **105 executed, 102 passed, 3 skipped**.
+- `AGENTS.md:35,72` says ~57 MB; `README.md:154` says ~56 MB. (Bare Xcode app is
+  22 MB; 56–57 MB is after the two 17 MB helpers — pick one and use it.)
+- `AGENTS.md:76` "105 tests pass, 3 skipped" double-counts: 105 is the total
+  *including* the skips.
 
-### 3. Fix two stale test-count claims
+### Nice-to-have
 
-A docs subagent recorded counts before the last 7 tests landed:
-- `README.md:195` and `docs/release-checklist.md:8` say "98 executed / 95
-  passing". Actual: **105 executed, 102 passed, 3 skipped**.
+- `FluidSpeechSynthesizer.swift:48-54` — `isInstalled` returns true for any
+  non-empty `pocket-tts` dir, so a partial download passes the guard. Check for
+  a required model file.
+- Per-voice `.safetensors` are fetched lazily at *speak* time; preloading the
+  configured voice during the consented install closes a small unconsented
+  fetch window.
+- `setVoice` is never called — voice is fixed at `"alba"` in the initialiser.
+- `CodexAppServerAdapter.swift:259-265` mutates `pendingInteractions` while
+  iterating it (safe in Swift, fragile) — collect IDs first.
+- ~30 lines of dead wake-word plumbing survive at `MiriApplication.swift:662,
+  701, 861, 881-883, 1041-1060`.
+- `RoutingReason` is never named outside its own file — the logging it exists
+  for isn't wired up.
+- `AGENTS.md` documents `installParakeetModels`/`installModels` as distinct;
+  both are now one-line forwarders to `installSpeechModels`.
+
+**Release automation was reviewed and had no findings at any severity.**
 
 ## What was done this session
 
