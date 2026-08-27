@@ -152,7 +152,7 @@ explicit consent prompt covering about **1 GB** in total: roughly 470 MB for
 Parakeet under `~/Library/Application Support/FluidAudio/Models`, and roughly
 520 MB for the PocketTTS voice under `~/.cache/fluidaudio/Models`. Model weights
 are not embedded in the DMG. The packaged arm64 application itself is about
-**56 MB**, including the `miri` CLI and `miri-mcp` helper. **Settings → Speech →
+**57 MB**, including the `miri` CLI and `miri-mcp` helper. **Settings → Speech →
 Delete Models** removes both model roots.
 
 ## Privacy
@@ -192,7 +192,7 @@ to the process you explicitly choose.
   Engine. Only the Parakeet encoder is ANE-resident.
 - Published benchmark evidence is stale and incomplete.
 
-`swift test` currently executes 98 tests: 95 pass, 3 are skipped because they
+`swift test` currently executes 104 tests: 101 pass, 3 are skipped because they
 assert the model-not-installed path and the machine already has models
 downloaded.
 

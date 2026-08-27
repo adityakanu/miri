@@ -39,8 +39,9 @@ reformatting that produces its polished output. That reformatting is precisely
 why it cannot run locally — the cleanup quality depends on server-side models.
 Without a connection it transcribes nothing.
 
-Miri runs both directions of the loop on the Apple Neural Engine: Parakeet for
-transcription, PocketTTS for speech output, both in-process. No audio leaves
+Miri runs both directions of the loop on-device: Parakeet transcription on the
+Apple Neural Engine, PocketTTS speech output on the GPU, both in-process. No
+audio leaves
 the machine and none of it crosses a process boundary. It works on a plane, on
 a locked-down network, or under a policy that forbids sending source-adjacent
 speech to third parties. The whole application is about 57 MB.

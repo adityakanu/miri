@@ -19,10 +19,11 @@ there is no Python in the product.
   notch-aware status overlay and configurable hold-to-talk hotkey.
 - AVFoundation microphone capture and PCM playback.
 - All speech runs on CoreML in-process via FluidAudio (Apache-2.0): NVIDIA
-  Parakeet TDT for transcription, PocketTTS for speech output, both on the
-  Apple Neural Engine. There is no Python runtime and no worker subprocess.
-- Optional opt-in cloud transcription against any OpenAI-compatible endpoint,
-  with the API key stored in the macOS Keychain.
+  Parakeet TDT for transcription on the Apple Neural Engine, PocketTTS for
+  speech output on the GPU. Do not claim the ANE for TTS. There is no Python
+  runtime and no worker subprocess.
+- Cloud transcription is not available: the provider was removed with the
+  Python worker and is not reimplemented natively yet.
 - Agent-neutral routing contracts with Clipboard, generic command, Codex,
   Claude Code, and Hermes adapters.
 - Codex is the live-validated path. Miri snapshots the exact agent/thread target
@@ -73,7 +74,8 @@ Artifacts were rebuilt from the current branch on 2026-08-27:
 
 Completed checks:
 
-- `swift test`: 105 tests pass, 3 skipped when speech models are absent.
+- `swift test`: 104 executed, 101 passed, 3 skipped when speech models are
+  absent. The 104 total includes the skips.
 - The new off-main-actor playback regression test passes.
 - `codesign --verify --deep --strict .preview/Miri.app` passes.
 - The staged bundle is arm64-only.
