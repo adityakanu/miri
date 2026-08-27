@@ -760,7 +760,14 @@ private final class AudioChunkPipe: @unchecked Sendable {
             lastStatus = approved ? "Approved for \(pending.target.name)" : "Denied for \(pending.target.name)"
             presentOverlay(.delivered(target: pending.target.name)); dismissOverlay(after: 1)
             logger.log("agent approval resolved target=\(pending.target.id) decision=\(approved ? "approve" : "deny")")
-        } catch { fail(error) }
+        } catch {
+            // The decision did not reach the agent. The request stays pending
+            // in both Miri and the adapter, so say so plainly rather than
+            // letting a lost deny look like a delivered one.
+            lastStatus = "Could not send your decision to \(pending.target.name). The request is still waiting."
+            logger.log(.error, "agent approval delivery failed target=\(pending.target.id): \(error.localizedDescription)")
+            fail(error)
+        }
     }
 
     private func fail(_ error: Error) {

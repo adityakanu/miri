@@ -173,7 +173,15 @@ public actor CodexAppServerAdapter: AgentAdapter {
         case .deny: decision = "decline"
         case .text: throw AdapterError.unsupportedInteraction
         }
-        respond(id: pending.rpcID, result: ["decision": decision])
+        do {
+            try respond(id: pending.rpcID, result: ["decision": decision])
+        } catch {
+            // The decision never reached Codex. Put the request back so it is
+            // still answerable and the caller can report the failure: a deny
+            // that silently vanished must never look like a delivered deny.
+            pendingInteractions[requestID] = pending
+            throw error
+        }
     }
     public nonisolated func events() -> AsyncStream<AgentEvent> { AsyncStream { continuation in Task { await self.add(continuation) } } }
 
@@ -282,9 +290,10 @@ public actor CodexAppServerAdapter: AgentAdapter {
         return nil
     }
     private func jsonValue(for id: RPCID) -> Any { switch id { case .integer(let value): value; case .string(let value): value } }
-    private func respond(id: RPCID, result: [String: Any]) {
-        guard let input, let data = try? JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": jsonValue(for: id), "result": result]) else { return }
-        try? input.write(contentsOf: data + Data([0x0A]))
+    private func respond(id: RPCID, result: [String: Any]) throws {
+        guard let input else { throw CodexAppServerError.disconnected }
+        let data = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": jsonValue(for: id), "result": result])
+        try input.write(contentsOf: data + Data([0x0A]))
     }
     private func respondError(id: RPCID, code: Int, message: String) {
         guard let input, let data = try? JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": jsonValue(for: id), "error": ["code": code, "message": message]]) else { return }
@@ -326,7 +335,11 @@ public actor CodexAppServerAdapter: AgentAdapter {
         FileHandle.standardError.write(Data("miri codex: \(message)\n".utf8))
     }
     private func declinePendingInteractions() {
-        for pending in pendingInteractions.values { respond(id: pending.rpcID, result: ["decision": "decline"]) }
+        // Best effort on teardown: if the pipe is already gone the requests die
+        // with the process anyway, so a failed write here is not actionable.
+        for pending in pendingInteractions.values {
+            try? respond(id: pending.rpcID, result: ["decision": "decline"])
+        }
         pendingInteractions.removeAll()
     }
 }
