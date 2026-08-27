@@ -1,8 +1,12 @@
 import Foundation
 
+/// How Miri starts listening. Push-to-talk is the only mode.
+///
+/// Wake word lived entirely in the removed Python worker and has no CoreML
+/// replacement. This stays an enum because config.toml persists `input_mode`
+/// and older releases wrote `wake_word`, which must still load.
 public enum MiriInputMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case pushToTalk = "push_to_talk"
-    case wakeWord = "wake_word"
 
     public static let supportedCases: [Self] = [.pushToTalk]
     public static func supported(configurationValue: String) -> Self {
@@ -10,20 +14,8 @@ public enum MiriInputMode: String, CaseIterable, Codable, Identifiable, Sendable
     }
 
     public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .pushToTalk: "Push to Talk"
-        case .wakeWord: "Wake Word (Experimental)"
-        }
-    }
-
-    public var detail: String {
-        switch self {
-        case .pushToTalk: "Miri listens only while you hold the configured shortcut."
-        case .wakeWord: "Miri listens locally for a wake phrase and always shows a listening indicator."
-        }
-    }
+    public var displayName: String { "Push to Talk" }
+    public var detail: String { "Miri listens only while you hold the configured shortcut." }
 }
 
 

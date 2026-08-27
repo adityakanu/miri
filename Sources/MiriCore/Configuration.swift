@@ -49,8 +49,10 @@ public enum MiriConfigurationParser {
         "ui": ["overlay", "show_transcript_preview", "display", "animation"],
         "audio": ["input_device", "output_device", "pause_stt_while_speaking", "speech_volume", "profile", "sample_rate"],
         "hotkeys": ["active_target", "cancel", "stop_speaking"],
-        // model/model_path/model_arch are legacy Moonshine keys, still accepted
-        // so existing configurations load without warnings.
+        // model/model_path/model_arch are legacy Moonshine keys and cloud_* are
+        // legacy cloud-transcription keys. Both providers were removed with the
+        // Python worker; the keys stay allowlisted so existing configurations
+        // load without warnings. They are read by nothing.
         "stt": ["provider", "model", "model_path", "model_arch", "language", "transcription_interval_ms",
                 "cloud_base_url", "cloud_model", "cloud_api_key_env", "cloud_language", "cloud_prompt", "cloud_timeout"],
         "tts": ["provider", "model", "language", "config_path", "voice", "voice_path", "max_characters", "allow_model_downloads", "speak_agent_responses", "agent_response_max_characters"],

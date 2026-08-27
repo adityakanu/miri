@@ -11,7 +11,8 @@ final class PreferencesTests: XCTestCase {
 
     func testConfigurationValuesMapToTypedPreferences() {
         XCTAssertEqual(MiriInputMode(rawValue: "push_to_talk"), .pushToTalk)
-        XCTAssertEqual(MiriInputMode(rawValue: "wake_word"), .wakeWord)
+        // Retired modes no longer exist as cases; they migrate via supported().
+        XCTAssertNil(MiriInputMode(rawValue: "wake_word"))
         XCTAssertNil(MiriInputMode(rawValue: "telepathy"))
     }
 

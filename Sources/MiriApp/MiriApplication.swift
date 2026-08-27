@@ -58,11 +58,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     @Published var mutedTargetIDs: Set<String> = []
     @Published var codexIntegrationStatus = "Checking Codex integration…"
     @Published var sttBackend: STTBackend = .parakeet
-    @Published var cloudSettings = STTCloudSettings()
-    @Published var cloudAPIKey = ""
-    @Published var cloudKeyIsStored = SecretStore.hasSecret()
     @Published var sttTestStatus: String?
-    @Published var isTestingSTT = false
     @Published var parakeetInstalled = ParakeetTranscriber.isInstalled
     @Published var voiceInstalled = FluidSpeechSynthesizer.isInstalled
     @Published var isInstallingParakeet = false
@@ -106,9 +102,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var overlayDismissTask: Task<Void, Never>?
     private var audioDeviceObserver: AudioDeviceObserver?
     private var audioSenderTask: Task<Void, Never>?
-    private var wakeSessionID: String?
-    private var wakeUtterance = false
-    private var wakeTimeoutTask: Task<Void, Never>?
     private var hotkeyPressedAt: Date?
     private var recordingReleasedAt: Date?
     private var speechRequestedAt: Date?
@@ -192,13 +185,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
             if case .string(let value)? = configuration.sections["stt"]?[key] { return value }
             return nil
         }
-        cloudSettings = STTCloudSettings(
-            baseURL: sttString("cloud_base_url") ?? STTPreset.groq.baseURL,
-            model: sttString("cloud_model") ?? STTPreset.groq.model,
-            language: sttString("cloud_language") ?? "en",
-            prompt: sttString("cloud_prompt") ?? ""
-        )
-        cloudKeyIsStored = SecretStore.hasSecret()
         if case .string(let display)? = configuration.sections["ui"]?["display"], let id = UInt32(display) { overlay.setPinnedDisplay(id) }
         else { overlay.setPinnedDisplay(nil) }
         switch configuration.sections["audio"]?["speech_volume"] {
@@ -514,7 +500,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
             hotkeyIsHeld = true; hotkeyPressedAt = .now
             let attempt = UUID(); listeningAttemptID = attempt
             Task {
-            await stopWakeMonitoring()
             await beginListening(dedicatedHotkey: hotkeyNames[identifier], attemptID: attempt)
             }
         case .released:
@@ -543,9 +528,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if state == .listening { endListening() } else { hotkeyPressedAt = .now; Task { await beginListening() } }
     }
 
-    private func beginListening(dedicatedHotkey: String? = nil, triggeredByWakeWord: Bool = false, attemptID: UUID? = nil) async {
-        let requiresHeldHotkey = !triggeredByWakeWord && attemptID != nil
-        if !triggeredByWakeWord {
+    private func beginListening(dedicatedHotkey: String? = nil, attemptID: UUID? = nil) async {
+        let requiresHeldHotkey = attemptID != nil
+        do {
             if requiresHeldHotkey {
                 guard hotkeyIsHeld, listeningAttemptID == attemptID else { return }
             }
@@ -610,7 +595,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
             }
         }
         catch { recordingSnapshot = nil; recordingRequestID = nil }
-        let session = UUID().uuidString; recordingSessionID = session; wakeUtterance = triggeredByWakeWord
+        let session = UUID().uuidString; recordingSessionID = session
         recordingBuffer.reset()
         do {
             if usesParakeet { try await parakeet.startStream() }
@@ -632,21 +617,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 performance.record("overlay_response_ms", milliseconds: Date().timeIntervalSince(hotkeyPressedAt) * 1_000, sessionID: session)
                 self.hotkeyPressedAt = nil
             }
-            if triggeredByWakeWord {
-                wakeTimeoutTask?.cancel()
-                wakeTimeoutTask = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(self?.wakeUtteranceTimeoutSeconds ?? 20))
-                    guard !Task.isCancelled else { return }
-                    await MainActor.run { self?.endListening() }
-                }
-            }
         } catch { fail(error) }
     }
 
     private func endListening() {
         guard state == .listening, let session = recordingSessionID else { return }
         listeningAttemptID = nil
-        capture.stop(); audioPipe.finish(); wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingReleasedAt = .now
+        capture.stop(); audioPipe.finish(); recordingReleasedAt = .now
         state = machine.handle(.releaseToTalk); hotkeys?.enableEscapeCancellation(false)
         presentOverlay(.transcribing(target: recordingSnapshot?.target.name ?? "No target"))
         let audio = recordingBuffer.take()
@@ -699,7 +676,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
            let pending = attention.item(requestID: requestID), pending.adapterBacked {
             await resolveApprovalTranscript(text, pending: pending)
             recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil
-            if inputMode == .wakeWord { await startWakeMonitoring(after: 1.1) }
             return
         }
         if let requestID = recordingRequestID, attention.item(requestID: requestID) == nil {
@@ -751,7 +727,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
         recordingSessionID = nil; recordingSnapshot = nil
         if state == .delivering { state = machine.handle(.delivered) }
         if case .copied = outcome { dismissOverlay(after: 1) }
-        if inputMode == .wakeWord { await startWakeMonitoring(after: 1.1) }
     }
 
     private func clearQuestionIfNeeded(for targetID: String) {
@@ -793,10 +768,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private func fail(_ error: Error) {
         capture.stop(); audioPipe.finish(); audioSenderTask?.cancel(); audioSenderTask = nil
         Task { [parakeet] in await parakeet.cancel() }
-        wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
+        recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil; lastStatus = error.localizedDescription
         hotkeyIsHeld = false; listeningAttemptID = nil
-        recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; speechSessionID = nil; wakeSessionID = nil
+        recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; speechSessionID = nil
         Task { [synth] in await synth.stop() }
         logger.log(.error, "interaction failed: \(error.localizedDescription)")
         state = machine.handle(.failure(error.localizedDescription)); presentOverlay(.error(message: error.localizedDescription))
@@ -934,17 +909,15 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func cancel() {
         synthesizer.stopSpeaking(at: .immediate); capture.stop()
         audioPipe.finish(); audioSenderTask?.cancel(); audioSenderTask = nil
-        wakeTimeoutTask?.cancel(); wakeTimeoutTask = nil; recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
+        recordingTimeoutTask?.cancel(); recordingTimeoutTask = nil
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; recordingBuffer.reset()
         hotkeyIsHeld = false; listeningAttemptID = nil
         hotkeyPressedAt = nil; recordingReleasedAt = nil; speechRequestedAt = nil
-        wakeSessionID = nil
         Task { [parakeet] in await parakeet.cancel() }
         Task { [synth] in await synth.stop() }
         pcmPlayer?.stop(); speechSessionID = nil; speechInterruptible = true; speechPriority = 0
         recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; hotkeys?.enableEscapeCancellation(false)
         state = machine.handle(.cancel); presentOverlay(.cancelled); dismissOverlay(after: 0.25)
-        if inputMode == .wakeWord { Task { await startWakeMonitoring(after: 0.5) } }
     }
     func selectTarget(_ id: String) {
         activeTargetID = id
@@ -964,18 +937,11 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
     func setInputMode(_ mode: MiriInputMode) {
         inputMode = mode; currentConfiguration.inputMode = mode.rawValue
-        currentConfiguration.sections["wakeword", default: [:]]["enabled"] = .boolean(mode == .wakeWord)
         Task {
-            if mode == .wakeWord { await startWakeMonitoring() }
-            else { await stopWakeMonitoring(); overlay.hide(); lastStatus = "Push to talk enabled" }
+            overlay.hide(); lastStatus = "Push to talk enabled"
             do { try await configurationStore.write(currentConfiguration) }
             catch { lastStatus = "Could not save input mode: \(error.localizedDescription)" }
         }
-    }
-
-    func applySTTPreset(_ preset: STTPreset) {
-        cloudSettings.apply(preset)
-        sttTestStatus = nil
     }
 
     /// Loads Parakeet only if its models are already on disk. Never downloads:
@@ -1039,61 +1005,17 @@ private final class AudioChunkPipe: @unchecked Sendable {
     /// provider takes effect without requiring a relaunch.
     func saveSTTSettings() {
         sttTestStatus = nil
-        if sttBackend == .cloud, let problem = cloudSettings.validationMessage {
-            lastStatus = problem; sttTestStatus = problem; return
-        }
-        if sttBackend == .parakeet, !ParakeetTranscriber.isInstalled {
+        guard ParakeetTranscriber.isInstalled else {
             sttTestStatus = "Download the on-device model before selecting it."
             return
         }
-        if !cloudAPIKey.isEmpty {
-            do { try SecretStore.save(cloudAPIKey); cloudAPIKey = ""; cloudKeyIsStored = true }
-            catch { lastStatus = error.localizedDescription; sttTestStatus = error.localizedDescription; return }
-        }
         currentConfiguration.sections["stt", default: [:]]["provider"] = .string(sttBackend.configurationValue)
-        if sttBackend == .cloud {
-            currentConfiguration.sections["stt", default: [:]]["cloud_base_url"] = .string(cloudSettings.trimmedBaseURL)
-            currentConfiguration.sections["stt", default: [:]]["cloud_model"] = .string(cloudSettings.trimmedModel)
-            currentConfiguration.sections["stt", default: [:]]["cloud_language"] = .string(cloudSettings.language)
-            currentConfiguration.sections["stt", default: [:]]["cloud_prompt"] = .string(cloudSettings.prompt)
-        }
-        let selected = sttBackend
         Task {
             do {
                 try await configurationStore.write(currentConfiguration)
-                switch selected {
-                case .parakeet:
-                    await loadParakeetIfInstalled()
-                    lastStatus = "On-device transcription enabled"
-                case .cloud:
-                    await parakeet.unload()
-                    lastStatus = "Cloud transcription enabled"
-                }
+                await loadParakeetIfInstalled()
+                lastStatus = "On-device transcription enabled"
             } catch { lastStatus = "Could not save speech settings: \(error.localizedDescription)" }
-        }
-    }
-
-    func removeStoredKey() {
-        do { try SecretStore.remove(); cloudKeyIsStored = false; cloudAPIKey = ""; sttTestStatus = nil
-             lastStatus = "Removed the stored API key" }
-        catch { lastStatus = error.localizedDescription }
-    }
-
-    /// Sends one second of silence to the configured endpoint. This proves the
-    /// URL, model, and credential are accepted before the user relies on voice.
-    func testSTTConnection() {
-        guard sttBackend == .cloud else { sttTestStatus = "On-device transcription needs no connection test."; return }
-        if let problem = cloudSettings.validationMessage { sttTestStatus = problem; return }
-        let key = cloudAPIKey.isEmpty ? SecretStore.read() : cloudAPIKey
-        let settings = cloudSettings
-        isTestingSTT = true
-        sttTestStatus = "Testing…"
-        Task { [weak self] in
-            let result = await Task.detached { CloudSTTProbe.check(settings: settings, apiKey: key) }.value
-            await MainActor.run {
-                self?.isTestingSTT = false
-                self?.sttTestStatus = result
-            }
         }
     }
 
@@ -1117,36 +1039,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
         return false
     }
 
-    private var wakeUtteranceTimeoutSeconds: Int {
-        if case .integer(let value)? = currentConfiguration.sections["wakeword"]?["utterance_timeout_seconds"] {
-            return max(2, min(value, 60))
-        }
-        return 20
-    }
-
-    private var wakeWordIsConfigured: Bool {
-        guard case .string(let provider)? = currentConfiguration.sections["wakeword"]?["provider"],
-              provider == "openwakeword",
-              case .string(let path)? = currentConfiguration.sections["wakeword"]?["model_path"] else { return false }
-        return FileManager.default.fileExists(atPath: expand(path))
-    }
-
-
-    // Wake word ran entirely inside the Python worker. It was always
-    // experimental, and stays unavailable until a CoreML wake model is wired in.
-    private func startWakeMonitoring(after delay: TimeInterval = 0) async {
-        guard inputMode == .wakeWord else { return }
-        lastStatus = "Wake word is unavailable in this build. Use push to talk."
-        inputMode = .pushToTalk
-    }
-
-    private func stopWakeMonitoring() async { wakeSessionID = nil }
-
-    private func activateWakeUtterance() async {
-        guard wakeSessionID != nil else { return }
-        await stopWakeMonitoring()
-        await beginListening(triggeredByWakeWord: true)
-    }
     func toggleAgentSpeech() {
         agentSpeechMuted.toggle()
         if agentSpeechMuted, state == .speaking { cancel() }
@@ -1291,7 +1183,6 @@ private final class AudioChunkPipe: @unchecked Sendable {
             // FluidAudio keeps its CoreML bundles in its own directory.
             try? ParakeetTranscriber.removeDownloadedModels()
             try? FluidSpeechSynthesizer.removeDownloadedModels()
-            try? SecretStore.remove()
             UserDefaults.standard.removeObject(forKey: "didCompleteOnboarding")
             NSApplication.shared.terminate(nil)
         }
@@ -1460,11 +1351,7 @@ private struct MiriOnboardingHost: View {
                 codexIntegrationStatus: controller.codexIntegrationStatus,
                 activeTargetID: $controller.activeTargetID,
                 sttBackend: $controller.sttBackend,
-                cloudSettings: $controller.cloudSettings,
-                cloudAPIKey: $controller.cloudAPIKey,
-                cloudKeyIsStored: controller.cloudKeyIsStored,
                 sttTestStatus: controller.sttTestStatus,
-                isTestingSTT: controller.isTestingSTT,
                 parakeetInstalled: controller.parakeetInstalled,
                 voiceInstalled: controller.voiceInstalled,
                 isInstallingParakeet: controller.isInstallingParakeet,
@@ -1481,10 +1368,7 @@ private struct MiriOnboardingHost: View {
                         installModels: controller.installModels,
                     deleteModels: controller.deleteDownloadedModels,
                     resetAllData: controller.resetAllData,
-                    applySTTPreset: controller.applySTTPreset,
                     saveSTTSettings: controller.saveSTTSettings,
-                    testSTTConnection: controller.testSTTConnection,
-                    removeStoredKey: controller.removeStoredKey,
                     installParakeetModels: controller.installParakeetModels
                 )
             )
