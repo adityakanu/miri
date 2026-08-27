@@ -119,6 +119,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var attention = AttentionQueue()
 
     override init() {
+        // Block every model download for the process before anything can load
+        // a model. Only an explicitly consented install lifts this, and only
+        // for the duration of that one load. See ModelDownloadGate.
+        ModelDownloadGate.blockDownloadsAtLaunch()
         super.init(); synthesizer.delegate = speechDelegate
         logger.log("application started")
         let server = ControlSocketServer { [weak self] request in await self?.speak(request) ?? .init(accepted: false, message: "Miri is unavailable") }

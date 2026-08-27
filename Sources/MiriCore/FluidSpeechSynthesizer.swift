@@ -72,13 +72,17 @@ public actor FluidSpeechSynthesizer {
     private func performLoad(allowDownload: Bool) async throws {
         if !allowDownload {
             guard Self.isInstalled else { throw SpeechSynthesisError.voiceMissing }
-            // Refuse every network fetch when the user has not consented.
-            ModelHub.offlineMode = true
         }
-        defer { ModelHub.offlineMode = false }
         let started = Date()
-        let manager = PocketTtsManager(defaultVoice: voice, language: .english)
-        try await manager.initialize()
+        let voice = voice
+        // The gate owns the process-wide download switch and serialises loads,
+        // so an unconsented load can never cancel a consented download and a
+        // consented one can never open the door for an unconsented fetch.
+        let manager = try await ModelDownloadGate.shared.run(allowDownload: allowDownload) {
+            let manager = PocketTtsManager(defaultVoice: voice, language: .english)
+            try await manager.initialize()
+            return manager
+        }
         self.manager = manager
         logger.log("pocket tts loaded in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
     }

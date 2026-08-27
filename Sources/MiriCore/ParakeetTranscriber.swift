@@ -72,14 +72,16 @@ public actor ParakeetTranscriber {
     private func performLoad(allowDownload: Bool) async throws {
         if !allowDownload {
             guard Self.isInstalled else { throw ParakeetError.modelsMissing }
-            // Refuse every network fetch when the user has not consented.
-            ModelHub.offlineMode = true
         }
-        defer { ModelHub.offlineMode = false }
         let started = Date()
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
+        // The gate owns the process-wide download switch and serialises loads.
+        // See ModelDownloadGate for why per-load flag flipping broke consent.
+        let manager = try await ModelDownloadGate.shared.run(allowDownload: allowDownload) {
+            let models = try await AsrModels.downloadAndLoad(version: .v3)
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+            return manager
+        }
         self.manager = manager
         self.decoderState = try TdtDecoderState()
         logger.log("parakeet loaded in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
