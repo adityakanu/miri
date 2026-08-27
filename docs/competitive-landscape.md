@@ -44,7 +44,7 @@ Apple Neural Engine, PocketTTS speech output on the GPU, both in-process. No
 audio leaves
 the machine and none of it crosses a process boundary. It works on a plane, on
 a locked-down network, or under a policy that forbids sending source-adjacent
-speech to third parties. The whole application is about 57 MB.
+speech to third parties. The whole application is about 56 MB.
 
 **Why someone would choose Miri instead:**
 

@@ -24,6 +24,14 @@ there is no Python in the product.
   runtime and no worker subprocess.
 - Cloud transcription is not available: the provider was removed with the
   Python worker and is not reimplemented natively yet.
+- Transcripts are normalized to written form before delivery via FluidAudio's
+  NeMo inverse text normalization ("port eight thousand and eighty" arrives as
+  "port 8080"). Voice approvals are parsed from the raw transcript, so no text
+  transform sits on a permission boundary.
+- An optional dictation target (`adapter = "cursor"`) types the transcript into
+  whichever app has keyboard focus, using synthesized key events rather than the
+  clipboard. It requires macOS Accessibility permission and fails loudly without
+  it.
 - Agent-neutral routing contracts with Clipboard, generic command, Codex,
   Claude Code, and Hermes adapters.
 - Codex is the live-validated path. Miri snapshots the exact agent/thread target
@@ -33,7 +41,7 @@ there is no Python in the product.
   supported through the neutral interaction contract.
 - Private local socket only; no HTTP listener, analytics, or persistent
   transcript history. Failed delivery uses a memory-only outbox.
-- The packaged app bundle is ~57 MB and arm64-only, including the `miri` and
+- The packaged app bundle is ~56 MB and arm64-only, including the `miri` and
   `miri-mcp` helpers. No inference runtime or model weights are embedded;
   Parakeet and PocketTTS models are downloaded on first use, together, after a
   single explicit consent prompt covering the full ~1 GB.
@@ -70,12 +78,12 @@ Artifacts were rebuilt from the current branch on 2026-08-27:
 - `dist/Miri-0.1.4.dmg` (~30 MB) and `dist/Miri-0.1.4.zip` (~28 MB), replacing
   the pre-pivot ~965 MB / ~656 MB artifacts
 - `dist/Miri-0.1.4.sha256`
-- staged application: `.preview/Miri.app` (~57 MB)
+- staged application: `.preview/Miri.app` (~56 MB)
 
 Completed checks:
 
-- `swift test`: 104 executed, 101 passed, 3 skipped when speech models are
-  absent. The 104 total includes the skips.
+- `swift test`: 111 executed, 108 passed, 3 skipped when speech models are
+  absent. The 111 total includes the skips.
 - The new off-main-actor playback regression test passes.
 - `codesign --verify --deep --strict .preview/Miri.app` passes.
 - The staged bundle is arm64-only.

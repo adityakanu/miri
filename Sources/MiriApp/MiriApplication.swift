@@ -449,6 +449,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         let workingDirectory = target.workingDirectory.map { URL(fileURLWithPath: expand($0)) } ?? FileManager.default.homeDirectoryForCurrentUser
         switch target.adapter {
         case "clipboard": return ClipboardAdapter(id: target.id)
+        case "cursor", "focused-app": return FocusedAppAdapter(id: target.id)
         case "generic", "generic-command":
             guard let path = target.endpoint else { return nil }
             return GenericCommandAdapter(id: target.id, executable: URL(fileURLWithPath: expand(path)), workingDirectory: workingDirectory)
@@ -690,10 +691,15 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
         let sendingLabel = showTranscriptPreview ? "\(snapshot.target.name) · \(String(text.prefix(80)))" : snapshot.target.name
         presentOverlay(.sending(target: sendingLabel))
+        // Spoken form is wrong for dictating into code: "port eight thousand
+        // and eighty" must arrive as "port 8080". Applied here rather than in
+        // the transcriber so voice approvals above still parse the raw text.
+        let written = TranscriptFormatter.written(text)
+        if written != text { logger.log("transcript normalized to written form") }
         // Speaking to an agent is the strongest presence signal there is, and
         // it is what ContextResolver's recency rule reads.
         noteAgentActivity(snapshot.target, spokenToByUser: true)
-        let outcome = await delivery.deliver(text, to: snapshot)
+        let outcome = await delivery.deliver(written, to: snapshot)
         switch outcome {
         case .delivered:
             clearQuestionIfNeeded(for: snapshot.target.id)
@@ -1139,6 +1145,45 @@ private final class AudioChunkPipe: @unchecked Sendable {
         Task { _ = await delivery.editOutbox(id: entry.id, text: textView.string); await refreshOutbox() }
     }
     func openConfig() { NSWorkspace.shared.open(URL(fileURLWithPath: MiriPaths.configPath)) }
+
+    /// True once a dictation target exists in the configuration.
+    var hasCursorTarget: Bool {
+        targets.contains { $0.adapter == "cursor" || $0.adapter == "focused-app" }
+    }
+
+    /// Adds the "type where my cursor is" target and prompts for the
+    /// Accessibility permission it needs. Kept as a one-click action because
+    /// hand-editing config.toml is the wrong first experience for dictation.
+    func addCursorTarget() {
+        guard !hasCursorTarget else {
+            lastStatus = "Dictation target already exists"
+            return
+        }
+        let target = TargetDefinition(
+            id: "cursor",
+            name: "Cursor (type where I'm focused)",
+            adapter: "cursor"
+        )
+        currentConfiguration.targets.append(target)
+        Task {
+            do {
+                try await configurationStore.write(currentConfiguration)
+                lastStatus = AccessibilityPermission.isGranted
+                    ? "Dictation target added"
+                    : "Dictation target added. Grant Accessibility so Miri can type."
+                // Prompts only when not already trusted; macOS ignores repeats.
+                AccessibilityPermission.requestIfNeeded()
+            } catch {
+                lastStatus = "Could not add the dictation target: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     func requestMicrophone() { Task { microphonePermission = await MicrophonePermissions.request() } }
     func openMicrophoneSettings() { MicrophonePermissions.openSystemSettings() }
     func openLogs() {
@@ -1355,6 +1400,8 @@ private struct MiriOnboardingHost: View {
                 parakeetInstalled: controller.parakeetInstalled,
                 voiceInstalled: controller.voiceInstalled,
                 isInstallingParakeet: controller.isInstallingParakeet,
+                hasCursorTarget: controller.hasCursorTarget,
+                accessibilityGranted: AccessibilityPermission.isGranted,
                 actions: .init(
                     requestMicrophoneAccess: controller.requestMicrophone,
                     openMicrophoneSettings: controller.openMicrophoneSettings,
@@ -1369,7 +1416,9 @@ private struct MiriOnboardingHost: View {
                     deleteModels: controller.deleteDownloadedModels,
                     resetAllData: controller.resetAllData,
                     saveSTTSettings: controller.saveSTTSettings,
-                    installParakeetModels: controller.installParakeetModels
+                    installParakeetModels: controller.installParakeetModels,
+                    addCursorTarget: controller.addCursorTarget,
+                    openAccessibilitySettings: controller.openAccessibilitySettings
                 )
             )
         }

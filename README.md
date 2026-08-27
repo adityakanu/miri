@@ -142,17 +142,39 @@ adapter = "clipboard"
 | Target | What Miri needs |
 | --- | --- |
 | Clipboard | Nothing else — copies the transcript safely. |
+| Cursor (dictation) | macOS Accessibility permission. |
 | Codex (validated) | Working directory and exact thread ID. |
 | Claude Code (experimental) | Working directory and optional session ID. |
 | Hermes (experimental) | Local API-server URL and exact session ID. |
 | Generic command | Local executable path; transcript goes to stdin. |
+
+### Dictate into whatever app you're using
+
+The `cursor` target types your transcript wherever the caret already is — an
+editor, a browser field, a terminal. Add it with **Settings → Targets → Add
+Dictation Target**, or by hand:
+
+```toml
+[[targets]]
+id = "cursor"
+name = "Cursor"
+adapter = "cursor"
+```
+
+macOS requires Accessibility permission before one app may type into another;
+Miri prompts on first use and refuses to send until it is granted, rather than
+dropping the text silently. Delivery uses synthesized key events, so your
+clipboard is never read or overwritten.
+
+Transcripts are converted to written form before delivery, so "set the port to
+eight thousand and eighty" arrives as "set the port to 8080".
 
 FluidAudio downloads the Parakeet and PocketTTS CoreML weights only after one
 explicit consent prompt covering about **1 GB** in total: roughly 470 MB for
 Parakeet under `~/Library/Application Support/FluidAudio/Models`, and roughly
 520 MB for the PocketTTS voice under `~/.cache/fluidaudio/Models`. Model weights
 are not embedded in the DMG. The packaged arm64 application itself is about
-**57 MB**, including the `miri` CLI and `miri-mcp` helper. **Settings → Speech →
+**56 MB**, including the `miri` CLI and `miri-mcp` helper. **Settings → Speech →
 Delete Models** removes both model roots.
 
 ## Privacy
@@ -176,11 +198,13 @@ to the process you explicitly choose.
 | --- | --- |
 | Menu-bar app, hotkeys, overlay, routing, outbox | Implemented |
 | In-process Parakeet STT and PocketTTS on CoreML | Implemented |
+| Written-form transcripts (inverse text normalization) | Implemented |
+| Dictation into the focused app | Implemented; needs live hardware validation |
 | Codex exact-thread targeting, speech, questions, and approvals | Implemented and live-validated |
 | Claude Code and Hermes adapters | Experimental — no live compatibility evidence yet |
 | M4 benchmark evidence | Stale; must be recollected against the CoreML-only build |
 | Signed/notarized DMG and official Homebrew Cask | Planned |
-| Optional cloud transcription, wake word, model lifecycle profiles | Not available in 0.1.4 |
+| Cloud transcription, wake word, model lifecycle profiles | Removed |
 
 ### Known limitations
 
@@ -190,9 +214,11 @@ to the process you explicitly choose.
   correction, mobile/remote relay, or worktree/diff dashboard.
 - PocketTTS runs at FluidAudio's default GPU-backed placement, not the Neural
   Engine. Only the Parakeet encoder is ANE-resident.
+- Dictation to the focused app needs macOS Accessibility permission, and the
+  keystroke path has unit coverage but no recorded live hardware test yet.
 - Published benchmark evidence is stale and incomplete.
 
-`swift test` currently executes 104 tests: 101 pass, 3 are skipped because they
+`swift test` currently executes 111 tests: 108 pass, 3 are skipped because they
 assert the model-not-installed path and the machine already has models
 downloaded.
 

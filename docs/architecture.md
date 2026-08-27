@@ -48,13 +48,11 @@ user-selectable in this release. The `supportedCases` arrays are the source of
 truth, not the full enum cases.
 
 - `STTBackend.supportedCases == [.parakeet]`. Parakeet is the only transcription
-  backend a user can select. The `.cloud` OpenAI-compatible path
-  (`CloudSTTProvider`, Keychain-backed key, Settings UI) is still compiled and
-  tested, but it is not offered in the 0.1.4 picker.
-- `MiriInputMode.supportedCases == [.pushToTalk]`. Wake word is not selectable;
-  push-to-talk is the only input mode.
-- `ModelLifecycleProfile` still exists as a type but has no picker in Settings,
-  so users cannot choose responsive/balanced/eco in 0.1.4.
+  backend. The `.cloud` OpenAI-compatible path, its Keychain-backed key, and its
+  Settings UI were deleted; retired `cloud_*` config keys remain allowlisted so
+  existing files still load.
+- `MiriInputMode.supportedCases == [.pushToTalk]`. Wake word was removed with the
+  Python worker; push-to-talk is the only input mode.
 
 ## Adapter capabilities
 

@@ -37,18 +37,25 @@ network access at all.
 **Delete Models** and **Reset All Data** both remove *both* roots above, not
 just the Application Support tree.
 
-## Transcription is on-device in 0.1.4
+## Transcription is on-device
 
-Parakeet is the only transcription backend selectable in 0.1.4. The optional
-OpenAI-compatible cloud path exists in the source and is covered by tests, but
-it is not exposed in the release picker, so no utterance audio leaves your Mac
-through Miri's transcription path in this build.
+Parakeet is the only transcription backend. The OpenAI-compatible cloud path was
+deleted along with the Python worker: there is no cloud provider, no
+Keychain-stored API key, and no network egress on the transcription path. No
+utterance audio leaves your Mac.
 
-If a future release re-exposes cloud transcription, it will be opt-in and off by
-default, each utterance will be uploaded as a 16 kHz mono WAV over TLS, that
-audio will be governed by the chosen provider's retention terms rather than
-Miri's, and the API key will be stored in the macOS Keychain (service
-`dev.miri.speech`) rather than in `config.toml`.
+If a future release introduces cloud transcription, it will be opt-in and off by
+default, each utterance will be uploaded over TLS, that audio will be governed
+by the chosen provider's retention terms rather than Miri's, and any API key
+will be stored in the macOS Keychain rather than in `config.toml`.
+
+## Dictation to the focused app
+
+The optional dictation target types your transcript into whichever application
+currently has keyboard focus. It uses synthesized key events, so your clipboard
+is never read or overwritten, and it requires macOS Accessibility permission —
+without that permission Miri refuses to send rather than silently dropping the
+text. Nothing is captured from the target application; the flow is one-way.
 
 ## Data locations
 
@@ -76,6 +83,6 @@ providers they are themselves configured to use.
 
 ## Input mode
 
-Push-to-talk is the only input mode in 0.1.4: Miri captures audio only while you
-hold the configured shortcut. Wake word is not selectable in this build, so
+Push-to-talk is the only input mode: Miri captures audio only while you
+hold the configured shortcut. Wake word was removed with the Python worker, so
 there is no always-listening path to audit.

@@ -16,6 +16,8 @@ struct MiriSettingsActions {
     var resetAllData: () -> Void = {}
     var saveSTTSettings: () -> Void = {}
     var installParakeetModels: () -> Void = {}
+    var addCursorTarget: () -> Void = {}
+    var openAccessibilitySettings: () -> Void = {}
 }
 
 struct MiriSettingsView: View {
@@ -33,6 +35,8 @@ struct MiriSettingsView: View {
     let parakeetInstalled: Bool
     let voiceInstalled: Bool
     let isInstallingParakeet: Bool
+    let hasCursorTarget: Bool
+    let accessibilityGranted: Bool
     var configurationError: String?
     var actions = MiriSettingsActions()
 
@@ -213,6 +217,22 @@ struct MiriSettingsView: View {
                     .pickerStyle(.radioGroup)
                     ForEach(targets) { target in TargetSummaryRow(target: target, selected: target.id == activeTargetID) }
                 }
+            }
+            Section("Dictation") {
+                if hasCursorTarget {
+                    Label("Dictation target is configured.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Add Dictation Target") { actions.addCursorTarget() }
+                        .buttonStyle(.borderedProminent)
+                }
+                if !accessibilityGranted {
+                    Label("Accessibility permission is required before Miri can type.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Button("Open Accessibility Settings") { actions.openAccessibilitySettings() }
+                }
+                Text("Sends your speech to whatever app has keyboard focus, typed at the caret. Your clipboard is never used.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Button("Edit Targets in Configuration") { actions.openConfiguration() }

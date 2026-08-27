@@ -5,7 +5,7 @@ of notarization unless Apple's accepted result and stapler validation are saved.
 
 ## Product gates
 
-- [x] `swift test` passes: 104 tests executed, 101 passing, 3 skipped, 0 failures.
+- [x] `swift test` passes: 111 tests executed, 108 passing, 3 skipped, 0 failures.
       The 3 skips are environment-dependent — they assert the
       *not-installed* model path and are skipped on machines that already have
       Parakeet or the PocketTTS voice downloaded.
