@@ -760,31 +760,33 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
 
     private func resolveApprovalTranscript(_ transcript: String, pending: AttentionItem) async {
-        guard let response = VoiceApprovalParser.parse(transcript) else {
-            state = machine.handle(.delivered)
-            lastStatus = "Approval unchanged. Say exactly: approve request, or deny request."
-            presentOverlay(.error(message: "Say approve request or deny request")); dismissOverlay(after: 2)
-            return
-        }
         guard let adapter = await adapterRegistry.adapter(for: pending.target.id) else {
             fail(AdapterError.unsupportedInteraction); return
         }
-        do {
+        let outcome = await ApprovalOutcome.resolve(transcript: transcript) { response in
             try await adapter.respond(to: pending.request.id, with: response)
+        }
+        lastStatus = outcome.statusMessage(targetName: pending.target.name)
+        // A decision that never left the machine must leave the request
+        // answerable: a lost deny must not look like a delivered one.
+        if !outcome.requestRemainsPending {
             attention.remove(id: pending.request.id)
             pendingAgentPrompt = attention.pending().first?.request.title
+        }
+        switch outcome {
+        case .notUnderstood:
             state = machine.handle(.delivered)
-            let approved = response == .approve
-            lastStatus = approved ? "Approved for \(pending.target.name)" : "Denied for \(pending.target.name)"
+            presentOverlay(.error(message: "Say approve request or deny request")); dismissOverlay(after: 2)
+        case .delivered(let response):
+            state = machine.handle(.delivered)
             presentOverlay(.delivered(target: pending.target.name)); dismissOverlay(after: 1)
-            logger.log("agent approval resolved target=\(pending.target.id) decision=\(approved ? "approve" : "deny")")
-        } catch {
-            // The decision did not reach the agent. The request stays pending
-            // in both Miri and the adapter, so say so plainly rather than
-            // letting a lost deny look like a delivered one.
-            lastStatus = "Could not send your decision to \(pending.target.name). The request is still waiting."
-            logger.log(.error, "agent approval delivery failed target=\(pending.target.id): \(error.localizedDescription)")
-            fail(error)
+            logger.log("agent approval resolved target=\(pending.target.id) decision=\(response == .approve ? "approve" : "deny")")
+        case .notDelivered(let message):
+            logger.log(.error, "agent approval delivery failed target=\(pending.target.id): \(message)")
+            fail(AdapterError.interactionDeliveryFailed(message))
+            // fail() sets lastStatus to the raw error; restore the message
+            // that tells the user their request is still answerable.
+            lastStatus = outcome.statusMessage(targetName: pending.target.name)
         }
     }
 
