@@ -12,6 +12,9 @@ public enum StatusOverlayState: Equatable, Sendable {
     case queued(target: String)
     case speaking(target: String)
     case needsInput(label: String)
+    /// A press too brief to record. Explains the gesture rather than leaving
+    /// the tap looking like a dead shortcut.
+    case hint(message: String)
     case error(message: String)
     case cancelled
 }
@@ -46,6 +49,8 @@ public struct StatusOverlayPresentation: Equatable, Sendable {
             title = "Speaking"; detail = target; systemImage = "speaker.wave.2.fill"; accessibilityLabel = "\(target) is speaking"; tint = .speaking; animates = !reduceMotion; activity = .waveform
         case .needsInput(let value):
             title = "Needs input"; detail = value; systemImage = "questionmark.bubble.fill"; accessibilityLabel = "Needs input: \(value)"; tint = .warning; animates = !reduceMotion; activity = .progress
+        case .hint(let value):
+            title = "Hold to speak"; detail = value; systemImage = "hand.tap.fill"; accessibilityLabel = "Hold to speak: \(value)"; tint = .neutral; animates = false; activity = .none
         case .error(let value):
             title = "Something went wrong"; detail = value; systemImage = "exclamationmark"; accessibilityLabel = "Miri error: \(value)"; tint = .error; animates = false; activity = .none
         case .cancelled:

@@ -49,3 +49,41 @@ struct AgentSessionsMenu: View {
         }
     }
 }
+
+/// Agent sessions running on this Mac right now.
+///
+/// These come from the process table rather than from transcript timestamps,
+/// so the list is what is genuinely open — the sessions you are most likely to
+/// want to speak to. They sit at the top level of the menu because selecting
+/// the terminal you are working in should not require opening Settings or
+/// scrolling a submenu.
+struct LiveSessionsMenu: View {
+    @ObservedObject var controller: AppController
+
+    var body: some View {
+        let rows = controller.liveSessionRows
+        if !rows.isEmpty {
+            Section("Running now") {
+                ForEach(rows) { row in
+                    Button {
+                        controller.selectLiveSession(row)
+                    } label: {
+                        Label(
+                            title(for: row),
+                            systemImage: isActive(row) ? "checkmark.circle.fill" : "terminal"
+                        )
+                    }
+                    .accessibilityLabel(row.accessibilityLabel)
+                }
+            }
+        }
+    }
+
+    private func title(for row: LiveSessionRow) -> String {
+        "\(row.title) — \(row.subtitle)"
+    }
+
+    private func isActive(_ row: LiveSessionRow) -> Bool {
+        row.existingTarget.map { $0.id == controller.activeTargetID } ?? false
+    }
+}

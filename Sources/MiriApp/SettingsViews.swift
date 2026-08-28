@@ -6,8 +6,6 @@ struct MiriSettingsActions {
     var openMicrophoneSettings: () -> Void = {}
     var openConfiguration: () -> Void = {}
     var openLogs: () -> Void = {}
-    var refreshCodexThreads: () -> Void = {}
-    var addCodexThread: (CodexThreadSummary) -> Void = { _ in }
     var installCodexIntegration: () -> Void = {}
     var saveActiveHotkey: () -> Void = {}
     var setInputMode: (MiriInputMode) -> Void = { _ in }
@@ -28,8 +26,6 @@ struct MiriSettingsView: View {
     @Binding var activeHotkey: String
     @Binding var inputMode: MiriInputMode
     let targets: [TargetDefinition]
-    let codexThreads: [CodexThreadSummary]
-    let isRefreshingCodexThreads: Bool
     let speechHealth: String
     let codexIntegrationStatus: String
     @Binding var activeTargetID: String?
@@ -46,18 +42,33 @@ struct MiriSettingsView: View {
     var configurationError: String?
     var actions = MiriSettingsActions()
 
-    /// Sidebar destinations. `Sessions` replaces the old "Targets" tab: the
-    /// pane is about live agent conversations, not a config file section.
+    /// Sidebar destinations.
+    ///
+    /// Sessions is a parent with one child per agent rather than a single long
+    /// pane: choosing a target should never mean scrolling past the other
+    /// agents to reach yours.
     enum Pane: String, CaseIterable, Identifiable, Hashable {
-        case general, speech, sessions, privacy
+        case general, speech
+        case codex, claude, hermes, dictation
+        case privacy
 
         var id: String { rawValue }
+
+        /// Children of the Sessions group, in the order they are listed.
+        static let sessionPanes: [Pane] = [.codex, .claude, .hermes, .dictation]
+
+        /// Top-level rows, in order. Session children are nested under the
+        /// Sessions group heading rather than appearing here.
+        static let topLevel: [Pane] = [.general, .speech, .privacy]
 
         var title: String {
             switch self {
             case .general: "General"
             case .speech: "Speech"
-            case .sessions: "Sessions"
+            case .codex: "Codex"
+            case .claude: "Claude Code"
+            case .hermes: "Hermes"
+            case .dictation: "Dictation"
             case .privacy: "Privacy"
             }
         }
@@ -66,8 +77,21 @@ struct MiriSettingsView: View {
             switch self {
             case .general: "gearshape"
             case .speech: "waveform"
-            case .sessions: "bubble.left.and.bubble.right"
+            case .codex: "chevron.left.forwardslash.chevron.right"
+            case .claude: "sparkles"
+            case .hermes: "point.3.connected.trianglepath.dotted"
+            case .dictation: "cursorarrow.and.square.on.square.dashed"
             case .privacy: "hand.raised"
+            }
+        }
+
+        /// The agent this pane lists sessions for, when it is an agent pane.
+        var agent: AgentSessionSummary.Agent? {
+            switch self {
+            case .codex: .codex
+            case .claude: .claude
+            case .hermes: .hermes
+            default: nil
             }
         }
     }
@@ -85,23 +109,13 @@ struct MiriSettingsView: View {
             // List(selection:) both proved unreliable in the Settings scene:
             // the row highlighted but the pane never changed.
             List {
-                ForEach(Pane.allCases) { pane in
-                    Button {
-                        selection = pane
-                    } label: {
-                        Label(pane.title, systemImage: pane.symbol)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(selection == pane ? Color.accentColor.opacity(0.22) : .clear)
-                    )
-                    .accessibilityAddTraits(selection == pane ? .isSelected : [])
+                ForEach(Pane.topLevel.prefix(2), id: \.self) { sidebarRow($0) }
+
+                Section("Sessions") {
+                    ForEach(Pane.sessionPanes, id: \.self) { sidebarRow($0) }
                 }
+
+                ForEach(Pane.topLevel.dropFirst(2), id: \.self) { sidebarRow($0) }
             }
             .navigationSplitViewColumnWidth(MiriTheme.Metrics.sidebarWidth)
             .listStyle(.sidebar)
@@ -111,7 +125,8 @@ struct MiriSettingsView: View {
                 switch selection {
                 case .general: general
                 case .speech: speech
-                case .sessions: targetsPane
+                case .codex, .claude, .hermes: agentPane
+                case .dictation: dictationPane
                 case .privacy: privacy
                 }
             }
@@ -121,6 +136,38 @@ struct MiriSettingsView: View {
         .navigationTitle("Miri Settings")
         .frame(minWidth: 820, idealWidth: 900, minHeight: 560, idealHeight: 660)
         .accessibilityLabel("Miri settings")
+    }
+
+    /// One sidebar row. The badge shows how many sessions an agent currently
+    /// offers, so the counts are readable without visiting each pane.
+    @ViewBuilder private func sidebarRow(_ pane: Pane) -> some View {
+        Button {
+            selection = pane
+        } label: {
+            HStack(spacing: 6) {
+                Label(pane.title, systemImage: pane.symbol)
+                Spacer()
+                if let agent = pane.agent {
+                    let count = discoveredSessions.filter { $0.agent == agent }.count
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("\(count) sessions")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(selection == pane ? Color.accentColor.opacity(0.22) : .clear)
+        )
+        .accessibilityAddTraits(selection == pane ? .isSelected : [])
     }
 
     private var speech: some View {
@@ -230,47 +277,120 @@ struct MiriSettingsView: View {
         }
     }
 
-    private var targetsPane: some View {
-        MiriPane(
-            title: "Sessions",
-            subtitle: "Live agent conversations Miri can speak to, and where the next utterance goes."
-        ) {
-            MiriSection(
-                title: "Active target",
-                subtitle: "Receives the next thing you say, unless an agent is waiting on you."
-            ) {
-                if targets.filter(\.enabled).isEmpty {
-                    MiriCard {
-                        Text("No targets yet. Add a session below, or the dictation target to type into any app.")
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Picker("Target used for the next recording", selection: $activeTargetID) {
-                        Text("Use configured default").tag(String?.none)
-                        ForEach(targets.filter(\.enabled)) { target in
-                            Text(target.name).tag(Optional(target.id))
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 380, alignment: .leading)
+    /// One agent's sessions: which of its targets is active, and which of its
+    /// discovered conversations can be added.
+    ///
+    /// Selection lives on the rows themselves. An earlier version paired a
+    /// working menu picker with a list of rows whose radio circles were purely
+    /// decorative, so the page appeared to offer two selectors and only one
+    /// responded. There is now one control, and it is the list.
+    @ViewBuilder private var agentPane: some View {
+        if let agent = selection.agent {
+            let agentTargets = targets.filter { $0.adapter == agent.rawValue }
+            let sessions = discoveredSessions.filter { $0.agent == agent }
 
-                    VStack(spacing: 8) {
-                        ForEach(targets) { target in
-                            ConfiguredTargetRow(
-                                target: target,
+            MiriPane(
+                title: agent.displayName,
+                subtitle: agent.isExperimental
+                    ? "Experimental: this adapter does not yet have the live validation Codex has."
+                    : "Sessions Miri can speak to, and where the next utterance goes."
+            ) {
+                MiriSection(
+                    title: "Targets",
+                    subtitle: "Select the one that receives the next thing you say."
+                ) {
+                    if agentTargets.isEmpty {
+                        MiriCard {
+                            Text("No \(agent.displayName) targets yet. Add one from the sessions below.")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        // "Use configured default" is a real choice, so it is a
+                        // row like any other rather than a separate control.
+                        SelectableTargetRow(
+                            title: "Use configured default",
+                            subtitle: "Miri picks using the routing rules.",
+                            isActive: activeTargetID == nil,
+                            select: { activeTargetID = nil },
+                            remove: nil
+                        )
+                        ForEach(agentTargets) { target in
+                            SelectableTargetRow(
+                                title: target.name,
+                                subtitle: [
+                                    target.enabled ? nil : "Disabled",
+                                    target.hotkey,
+                                    target.session.map { "Session \($0.prefix(8))" },
+                                ]
+                                .compactMap { $0 }
+                                .joined(separator: " · "),
                                 isActive: target.id == activeTargetID,
+                                select: { activeTargetID = target.id },
                                 remove: { actions.removeTarget(target.id) }
                             )
                         }
                     }
                 }
-            }
 
-            MiriSection(
-                title: "Dictation",
-                subtitle: "Types where your cursor already is. Your clipboard is never used."
-            ) {
+                MiriSection(
+                    title: "Available sessions",
+                    subtitle: "Conversations Miri found for \(agent.displayName)."
+                ) {
+                    HStack {
+                        Button { actions.refreshSessions() } label: {
+                            Label(
+                                isRefreshingSessions ? "Refreshing…" : "Refresh",
+                                systemImage: "arrow.clockwise"
+                            )
+                        }
+                        .disabled(isRefreshingSessions)
+                        Spacer()
+                    }
+
+                    if sessions.isEmpty {
+                        MiriCard {
+                            Text(sessionDiscoveryNotes[agent] ?? "No \(agent.displayName) sessions found on this Mac.")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(sessions.prefix(12)) { session in
+                            DiscoveredSessionRow(
+                                session: session,
+                                isAdded: targets.contains { $0.session == session.id },
+                                add: { actions.addSession(session) }
+                            )
+                        }
+                    }
+                }
+
+                if agent == .codex {
+                    MiriSection(title: "Voice integration") {
+                        MiriCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label(codexIntegrationStatus, systemImage: "waveform.and.mic")
+                                    .font(.callout)
+                                Button("Install or Repair Miri MCP…") { actions.installCodexIntegration() }
+                                Text("Lets Codex announce progress, blockers, questions, and completion through Miri.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .onAppear {
+                if discoveredSessions.isEmpty { actions.refreshSessions() }
+            }
+        }
+    }
+
+    /// Dictation is not an agent conversation, so it gets its own pane rather
+    /// than a section wedged among the agents.
+    private var dictationPane: some View {
+        MiriPane(
+            title: "Dictation",
+            subtitle: "Types what you say into whichever app has keyboard focus. Your clipboard is never used."
+        ) {
+            MiriSection(title: "Target") {
                 MiriCard {
                     VStack(alignment: .leading, spacing: 10) {
                         if hasCursorTarget {
@@ -280,7 +400,20 @@ struct MiriSettingsView: View {
                             Button("Add Dictation Target") { actions.addCursorTarget() }
                                 .buttonStyle(.borderedProminent)
                         }
-                        if !accessibilityGranted {
+                    }
+                }
+            }
+
+            MiriSection(
+                title: "Permission",
+                subtitle: "macOS requires Accessibility permission before any app can type into another."
+            ) {
+                MiriCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if accessibilityGranted {
+                            Label("Accessibility permission granted.", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
                             Label(
                                 "Accessibility permission is required before Miri can type.",
                                 systemImage: "exclamationmark.triangle.fill"
@@ -292,50 +425,9 @@ struct MiriSettingsView: View {
                 }
             }
 
-            MiriSection(
-                title: "Discovered sessions",
-                subtitle: "Conversations found across Codex, Claude Code, and Hermes."
-            ) {
-                HStack {
-                    Button { actions.refreshSessions() } label: {
-                        Label(
-                            isRefreshingSessions ? "Refreshing…" : "Refresh",
-                            systemImage: "arrow.clockwise"
-                        )
-                    }
-                    .disabled(isRefreshingSessions)
-                    Spacer()
-                }
-
-                ForEach(AgentSessionSummary.Agent.allCases, id: \.self) { agent in
-                    AgentSessionGroup(
-                        agent: agent,
-                        sessions: discoveredSessions.filter { $0.agent == agent },
-                        note: sessionDiscoveryNotes[agent],
-                        isAdded: { session in targets.contains { $0.session == session.id } },
-                        add: { actions.addSession($0) }
-                    )
-                }
-            }
-
-            MiriSection(title: "Codex voice integration") {
-                MiriCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label(codexIntegrationStatus, systemImage: "waveform.and.mic")
-                            .font(.callout)
-                        Button("Install or Repair Miri MCP…") { actions.installCodexIntegration() }
-                        Text("Lets Codex announce progress, blockers, questions, and completion through Miri.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-
             Button("Edit Targets in Configuration") { actions.openConfiguration() }
                 .keyboardShortcut("e", modifiers: [.command])
                 .accessibilityHint("Opens the configuration file where targets are managed")
-        }
-        .onAppear {
-            if discoveredSessions.isEmpty { actions.refreshSessions() }
         }
     }
 
@@ -532,99 +624,91 @@ private struct MicrophonePermissionRow: View {
     }
 }
 
-/// One configured target: what it is, whether it receives the next utterance,
-/// and a way to remove it without editing config.toml.
-private struct ConfiguredTargetRow: View {
-    let target: TargetDefinition
+/// A target row that *is* the selection control.
+///
+/// The whole row is the button, so the visible radio marker and the clickable
+/// area are the same thing — the earlier decorative-circle row looked
+/// selectable but ignored clicks.
+private struct SelectableTargetRow: View {
+    let title: String
+    let subtitle: String
     let isActive: Bool
-    let remove: () -> Void
+    let select: () -> Void
+    /// Nil for rows that are not removable, such as the default choice.
+    let remove: (() -> Void)?
 
     var body: some View {
-        MiriCard {
-            HStack(spacing: 12) {
-                Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(target.name).fontWeight(.medium).lineLimit(1)
-                    Text([target.adapter, target.hotkey].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 0) {
+            Button(action: select) {
+                HStack(spacing: 12) {
+                    Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
+                        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).fontWeight(isActive ? .semibold : .regular).lineLimit(1)
+                        if !subtitle.isEmpty {
+                            Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    Spacer()
                 }
-                Spacer()
-                if !target.enabled {
-                    Text("Disabled").font(.caption).foregroundStyle(.secondary)
-                }
-                Button(role: .destructive) { remove() } label: {
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isActive ? [.isSelected] : [])
+            .accessibilityLabel(subtitle.isEmpty ? title : "\(title), \(subtitle)")
+
+            if let remove {
+                Button(role: .destructive, action: remove) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Remove \(target.name)")
+                .accessibilityLabel("Remove \(title)")
             }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(
-            "\(target.name), \(target.adapter) adapter\(target.enabled ? "" : ", disabled")\(isActive ? ", active target" : "")"
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: MiriTheme.Metrics.cardCornerRadius)
+                .fill(isActive ? Color.accentColor.opacity(0.10) : Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: MiriTheme.Metrics.cardCornerRadius)
+                .strokeBorder(isActive ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.08))
         )
     }
 }
 
-/// Discovered sessions for one agent, with its own empty/failure note so a
-/// missing agent never looks like a missing feature.
-private struct AgentSessionGroup: View {
-    let agent: AgentSessionSummary.Agent
-    let sessions: [AgentSessionSummary]
-    let note: String?
-    let isAdded: (AgentSessionSummary) -> Bool
-    let add: (AgentSessionSummary) -> Void
+/// A discovered conversation that can be adopted as a target.
+private struct DiscoveredSessionRow: View {
+    let session: AgentSessionSummary
+    let isAdded: Bool
+    let add: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text(agent.displayName).font(.headline)
-                if agent.isExperimental {
-                    Text("Experimental")
-                        .font(.caption2)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                        .accessibilityLabel("Experimental adapter")
+        MiriCard {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title).lineLimit(1)
+                    Text(
+                        [session.projectName, String(session.id.prefix(8))]
+                            .compactMap { $0 }
+                            .joined(separator: " · ")
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if !sessions.isEmpty {
-                    Text("\(sessions.count)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-
-            if let note, sessions.isEmpty {
-                Text(note).font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(sessions.prefix(8)) { session in
-                    MiriCard {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(session.title).lineLimit(1)
-                                Text(subtitle(for: session))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if isAdded(session) {
-                                Label("Added", systemImage: "checkmark.circle.fill")
-                                    .labelStyle(.iconOnly)
-                                    .foregroundStyle(.green)
-                                    .accessibilityLabel("Already added")
-                            } else {
-                                Button("Add") { add(session) }
-                            }
-                        }
-                    }
+                if isAdded {
+                    Label("Added", systemImage: "checkmark.circle.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(.green)
+                        .accessibilityLabel("Already added")
+                } else {
+                    Button("Add") { add() }
                 }
             }
         }
-    }
-
-    private func subtitle(for session: AgentSessionSummary) -> String {
-        [session.projectName, String(session.id.prefix(8))]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        .accessibilityElement(children: .contain)
     }
 }
 

@@ -115,6 +115,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     /// happened rather than one fabricated timestamp per configured target.
     private var sessionPresence: [String: SessionPresence] = [:]
     private var siblingWatchTask: Task<Void, Never>?
+    private var liveSessionWatchTask: Task<Void, Never>?
 
     override init() {
         // Different copies of the same bundle can otherwise run together (for
@@ -161,6 +162,19 @@ private final class AudioChunkPipe: @unchecked Sendable {
             self.hotkeys = hotkeys
         } catch { lastStatus = "Hotkey unavailable: \(error.localizedDescription)"; logger.log(.error, lastStatus) }
         audioDeviceObserver = AudioDeviceObserver { [weak self] change in self?.audioDeviceChanged(change) }
+        // Keep the "Running now" list current. The scan is a sub-millisecond
+        // read of the process table, and the assignment is skipped when
+        // nothing changed so an idle Mac triggers no SwiftUI work.
+        liveSessionWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await MainActor.run {
+                    guard let self else { return }
+                    let scanned = LiveSessionScanner.scan()
+                    if scanned != self.liveSessions { self.liveSessions = scanned }
+                }
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
         Task { await setUp() }
     }
 
@@ -393,6 +407,43 @@ private final class AudioChunkPipe: @unchecked Sendable {
     /// Per-agent discovery problems, shown inline so a failure is visible
     /// rather than looking like "this agent has no sessions".
     @Published var sessionDiscoveryNotes: [AgentSessionSummary.Agent: String] = [:]
+
+    /// Agent sessions running on this Mac right now, keyed by session ID.
+    ///
+    /// Discovery from transcripts cannot distinguish a conversation that ended
+    /// an hour ago from one still open, so this is read from the process table
+    /// instead. Cheap enough (well under 2 ms) to refresh whenever the menu is
+    /// about to be read.
+    @Published var liveSessions: [LiveAgentSession] = []
+
+    /// Live sessions paired with the target that already routes to them, so
+    /// the menu can offer one-click selection for a known session and
+    /// one-click adoption for a new one.
+    var liveSessionRows: [LiveSessionRow] {
+        liveSessions.map { session in
+            LiveSessionRow(
+                session: session,
+                existingTarget: currentConfiguration.targets.first { $0.session == session.id }
+            )
+        }
+    }
+
+    /// Speaks to a live session, adopting it as a target the first time.
+    func selectLiveSession(_ row: LiveSessionRow) {
+        if let existing = row.existingTarget {
+            selectTarget(existing.id)
+            return
+        }
+        addDiscoveredSession(
+            AgentSessionSummary(
+                id: row.session.id,
+                agent: row.session.agent,
+                title: row.session.projectName ?? row.session.agent.displayName,
+                workingDirectory: row.session.workingDirectory,
+                lastActiveAt: Date()
+            )
+        )
+    }
 
     /// Refreshes sessions for all three agents.
     ///
@@ -659,7 +710,25 @@ private final class AudioChunkPipe: @unchecked Sendable {
             await beginListening(dedicatedHotkey: hotkeyNames[identifier], attemptID: attempt)
             }
         case .released:
-            hotkeyIsHeld = false; listeningAttemptID = nil; endListening()
+            // A tap too short to open the microphone never reaches .listening,
+            // so the release has nothing to finish. Say so instead of leaving
+            // the shortcut looking broken.
+            let heldFor = hotkeyPressedAt.map { Date().timeIntervalSince($0) }
+            hotkeyIsHeld = false; listeningAttemptID = nil
+            switch HotkeyReleaseOutcome.resolve(isListening: state == .listening, heldFor: heldFor) {
+            case .finishRecording:
+                endListening()
+            case .explainHold:
+                // Abandon the in-flight start so a late beginListening cannot
+                // leave a recording running with the key already up.
+                hotkeyPressedAt = nil
+                lastStatus = "Hold \(activeHotkey) while you speak."
+                presentOverlay(.hint(message: "Hold \(activeHotkey) while you speak"))
+                dismissOverlay(after: 1.6)
+            case .ignore:
+                hotkeyPressedAt = nil
+                endListening()
+            }
         case .cancelled: cancel()
         }
     }
@@ -1460,6 +1529,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func shutdown() {
         logger.log("application shutting down")
         agentCompletionTimeoutTasks.values.forEach { $0.cancel() }
+        liveSessionWatchTask?.cancel()
         capture.stop(); hotkeys?.shutdown(); server?.stop()
         Task {
             await adapterRegistry.disconnectAll()
@@ -1540,9 +1610,13 @@ private struct MiriOnboardingHost: View {
             // needs from you, before any configuration.
             Section {
                 Text(controller.lastStatus).lineLimit(4).frame(maxWidth: 360)
+                #if DEBUG
+                // Signal levels are for diagnosing a bad recording, not for
+                // daily use. Debug builds only.
                 if let diagnostics = controller.audioDiagnostics {
                     Text(diagnostics).font(.caption2).foregroundStyle(.secondary)
                 }
+                #endif
             }
 
             if let prompt = controller.pendingAgentPrompt {
@@ -1568,8 +1642,13 @@ private struct MiriOnboardingHost: View {
 
             AgentSessionsMenu(controller: controller)
 
+            // Sessions running on this Mac right now, at the top level rather
+            // than nested in a submenu: picking the terminal you are actually
+            // working in should be one click.
+            LiveSessionsMenu(controller: controller)
+
             Section("Routing") {
-                Menu("Active target") {
+                Menu("Other targets") {
                     if controller.targets.isEmpty { Text("No targets configured") }
                     ForEach(controller.targets) { target in
                         Button { controller.selectTarget(target.id) } label: {
@@ -1621,8 +1700,6 @@ private struct MiriOnboardingHost: View {
                 activeHotkey: $controller.activeHotkey,
                 inputMode: $controller.inputMode,
                     targets: controller.targets,
-                codexThreads: controller.codexThreads,
-                isRefreshingCodexThreads: controller.isRefreshingCodexThreads,
                 speechHealth: controller.speechHealth,
                 codexIntegrationStatus: controller.codexIntegrationStatus,
                 activeTargetID: $controller.activeTargetID,
@@ -1641,8 +1718,6 @@ private struct MiriOnboardingHost: View {
                     openMicrophoneSettings: controller.openMicrophoneSettings,
                     openConfiguration: controller.openConfig,
                     openLogs: controller.openLogs,
-                    refreshCodexThreads: { Task { await controller.refreshCodexThreads() } },
-                    addCodexThread: controller.addCodexThread,
                     installCodexIntegration: controller.installCodexIntegration,
                     saveActiveHotkey: controller.saveActiveHotkey,
                     setInputMode: controller.setInputMode,
