@@ -2,6 +2,21 @@ import XCTest
 @testable import MiriCore
 
 final class AgentTests: XCTestCase {
+    func testConfiguredCodexThreadIsReadyForLazyConnection() async {
+        let adapter = CodexAppServerAdapter(
+            id: "lazy-codex",
+            executable: URL(fileURLWithPath: "/usr/bin/false"),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            threadID: "existing-thread"
+        )
+
+        // Merely constructing a configured target must not start Codex or claim
+        // its thread-store writer, but DeliveryCoordinator may treat it as a
+        // target it can attempt when the user actually speaks to it.
+        let status = await adapter.status()
+        XCTAssertEqual(status, .ready)
+    }
+
     func testHermesDoesNotAdvertiseBufferedResponsesAsStreaming() {
         let adapter = HermesAdapter(
             id: "hermes",

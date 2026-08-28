@@ -116,6 +116,18 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var sessionPresence: [String: SessionPresence] = [:]
 
     override init() {
+        // Different copies of the same bundle can otherwise run together (for
+        // example /Applications/0.1.3 plus .preview/0.1.4), both owning the
+        // global hotkey and delivering the same utterance. Terminate every
+        // sibling instance before installing the hotkey or opening the socket.
+        // `forceTerminate` is intentional: the older build does not cooperate
+        // with a handoff protocol and is precisely the process we must stop.
+        if let bundleID = Bundle.main.bundleIdentifier {
+            for application in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            where application.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                application.forceTerminate()
+            }
+        }
         // Block every model download for the process before anything can load
         // a model. Only an explicitly consented install lifts this, and only
         // for the duration of that one load. See ModelDownloadGate.
@@ -227,6 +239,16 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 guard !Task.isCancelled else { return }
                 self?.handleAgentEvent(event, target: target)
             }
+        }
+        // A configured Codex thread may already be open in Codex, which owns
+        // the thread-store writer. Eagerly resuming every target at app launch
+        // produces a noisy "already has an active writer" error before the
+        // user does anything. Register it now, but connect only if Miri actually
+        // sends to that target; the error is then relevant and actionable.
+        if target.adapter == "codex", target.session != nil {
+            targetStatuses[target.id] = .ready
+            logger.log("target registered for lazy connection id=\(target.id) adapter=codex")
+            return
         }
         do {
             try await adapter.connect()

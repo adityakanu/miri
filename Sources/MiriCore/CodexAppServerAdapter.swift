@@ -117,7 +117,14 @@ public actor CodexAppServerAdapter: AgentAdapter {
         input?.closeFile(); process?.terminate(); input = nil; outputHandle = nil; errorHandle = nil; process = nil
         targetStatus = .disconnected; emit(.status(.disconnected))
     }
-    public func status() async -> TargetStatus { targetStatus }
+    /// A configured thread is available for lazy connection even before its
+    /// app-server subprocess starts. This lets Miri avoid claiming every Codex
+    /// thread at launch; `sendUserMessage` performs the real connection and
+    /// surfaces a writer conflict only when that target is actually used.
+    public func status() async -> TargetStatus {
+        if process == nil, configuredThreadID != nil { return .ready }
+        return targetStatus
+    }
 
     public func listThreads(limit: Int = 30) async throws -> [CodexThreadSummary] {
         guard process != nil else { throw CodexAppServerError.disconnected }
@@ -147,6 +154,7 @@ public actor CodexAppServerAdapter: AgentAdapter {
     }
 
     public func sendUserMessage(_ text: String) async throws -> DeliveryReceipt {
+        if process == nil { try await connect() }
         guard let threadID else { throw CodexAppServerError.disconnected }
         guard targetStatus == .ready else { throw CodexAppServerError.unavailable(targetStatus) }
         let messageID = UUID()

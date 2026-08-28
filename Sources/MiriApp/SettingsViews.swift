@@ -72,26 +72,54 @@ struct MiriSettingsView: View {
         }
     }
 
-    @State private var selection: Pane = .general
+    @AppStorage("settings.selectedPane") private var selectedPaneRaw = Pane.general.rawValue
+
+    private var selection: Pane {
+        get { Pane(rawValue: selectedPaneRaw) ?? .general }
+        nonmutating set { selectedPaneRaw = newValue.rawValue }
+    }
 
     var body: some View {
         NavigationSplitView {
-            List(Pane.allCases, selection: $selection) { pane in
-                NavigationLink(value: pane) {
-                    Label(pane.title, systemImage: pane.symbol)
+            // Explicit buttons drive the detail column. NavigationLink and
+            // List(selection:) both proved unreliable in the Settings scene:
+            // the row highlighted but the pane never changed.
+            List {
+                ForEach(Pane.allCases) { pane in
+                    Button {
+                        selection = pane
+                    } label: {
+                        Label(pane.title, systemImage: pane.symbol)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selection == pane ? Color.accentColor.opacity(0.22) : .clear)
+                    )
+                    .accessibilityAddTraits(selection == pane ? .isSelected : [])
                 }
             }
             .navigationSplitViewColumnWidth(MiriTheme.Metrics.sidebarWidth)
             .listStyle(.sidebar)
+            .toolbar(removing: .sidebarToggle)
         } detail: {
-            switch selection {
-            case .general: general
-            case .speech: speech
-            case .sessions: targetsPane
-            case .privacy: privacy
+            Group {
+                switch selection {
+                case .general: general
+                case .speech: speech
+                case .sessions: targetsPane
+                case .privacy: privacy
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: .textBackgroundColor))
         }
-        .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 620)
+        .navigationTitle("Miri Settings")
+        .frame(minWidth: 820, idealWidth: 900, minHeight: 560, idealHeight: 660)
         .accessibilityLabel("Miri settings")
     }
 
@@ -305,6 +333,9 @@ struct MiriSettingsView: View {
             Button("Edit Targets in Configuration") { actions.openConfiguration() }
                 .keyboardShortcut("e", modifiers: [.command])
                 .accessibilityHint("Opens the configuration file where targets are managed")
+        }
+        .onAppear {
+            if discoveredSessions.isEmpty { actions.refreshSessions() }
         }
     }
 

@@ -82,8 +82,8 @@ Artifacts were rebuilt from the current branch on 2026-08-27:
 
 Completed checks:
 
-- `swift test`: 111 executed, 108 passed, 3 skipped when speech models are
-  absent. The 111 total includes the skips.
+- `swift test`: 130 executed, 127 passed, 3 skipped when speech models are
+  absent. The 130 total includes the skips.
 - The new off-main-actor playback regression test passes.
 - `codesign --verify --deep --strict .preview/Miri.app` passes.
 - The staged bundle is arm64-only.

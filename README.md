@@ -214,11 +214,10 @@ to the process you explicitly choose.
   correction, mobile/remote relay, or worktree/diff dashboard.
 - PocketTTS runs at FluidAudio's default GPU-backed placement, not the Neural
   Engine. Only the Parakeet encoder is ANE-resident.
-- Dictation to the focused app needs macOS Accessibility permission, and the
-  keystroke path has unit coverage but no recorded live hardware test yet.
+- Dictation to the focused app needs macOS Accessibility permission.
 - Published benchmark evidence is stale and incomplete.
 
-`swift test` currently executes 111 tests: 108 pass, 3 are skipped because they
+`swift test` currently executes 130 tests: 127 pass, 3 are skipped because they
 assert the model-not-installed path and the machine already has models
 downloaded.
 
