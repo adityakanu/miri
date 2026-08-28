@@ -114,6 +114,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
     /// agent events and from deliveries, so the HUD reflects what actually
     /// happened rather than one fabricated timestamp per configured target.
     private var sessionPresence: [String: SessionPresence] = [:]
+    private var siblingWatchTask: Task<Void, Never>?
 
     override init() {
         // Different copies of the same bundle can otherwise run together (for
@@ -133,6 +134,23 @@ private final class AudioChunkPipe: @unchecked Sendable {
         // for the duration of that one load. See ModelDownloadGate.
         ModelDownloadGate.blockDownloadsAtLaunch()
         super.init(); synthesizer.delegate = speechDelegate
+        // Also cover the reverse order: LaunchServices allows an older copy of
+        // the same bundle to start *after* this one. Workspace launch
+        // notifications are not delivered reliably for a duplicate bundle, so
+        // use a low-frequency watchdog. The task captures only stable values,
+        // not the controller, and ends with the process.
+        if let bundleID = Bundle.main.bundleIdentifier {
+            let currentPID = ProcessInfo.processInfo.processIdentifier
+            siblingWatchTask = Task {
+                while !Task.isCancelled {
+                    for application in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                    where application.processIdentifier != currentPID {
+                        application.forceTerminate()
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+        }
         logger.log("application started")
         let server = ControlSocketServer { [weak self] request in await self?.speak(request) ?? .init(accepted: false, message: "Miri is unavailable") }
         self.server = server
