@@ -60,6 +60,10 @@ public enum MiriConfigurationParser {
         "wakeword": ["enabled", "provider", "model_path", "threshold", "utterance_timeout_seconds"],
         "models": ["stt", "tts", "manifest_path", "directory"],
         "agents": ["codex_path", "claude_path"],
+        // Hermes runs one process for all of its conversations, so it cannot be
+        // found in the process table. An endpoint here lets Miri list its
+        // sessions before any Hermes target exists, which is otherwise circular.
+        "hermes": ["endpoint"],
         "interaction": ["mode", "half_duplex", "wake_word"]
     ]
     private static let targetKeys: Set<String> = ["id", "name", "agent", "adapter", "working_directory", "project", "session", "endpoint", "hotkey", "enabled", "queue_replacement"]

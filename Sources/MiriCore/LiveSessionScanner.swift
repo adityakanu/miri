@@ -91,26 +91,50 @@ public enum LiveSessionScanner {
         "claude": .claude,
     ]
 
+    /// Whether absence from a scan is meaningful for this adapter.
+    ///
+    /// Only agents that run one process per conversation can be observed this
+    /// way. Hermes runs a single application process, so "not in the scan"
+    /// tells us nothing about it and must never be read as "not running".
+    public static func canDetectLiveness(_ adapter: String) -> Bool {
+        agentExecutables.values.map(\.rawValue).contains(adapter)
+    }
+
     public static func scan() -> [LiveAgentSession] {
-        var sessions: [LiveAgentSession] = []
-        var seen: Set<String> = []
+        var candidates: [String: LiveAgentSession] = [:]
         for pid in processIdentifiers() {
             guard let agent = agentExecutables[executableName(of: pid).lowercased()] else { continue }
             let files = openFilePaths(of: pid)
             guard let id = sessionIdentifier(agent: agent, openFiles: files) else { continue }
-            // A supervisor and its child can both hold the transcript open.
-            // The session is the unit the user picks, so list it once.
-            guard seen.insert(id).inserted else { continue }
-            sessions.append(
-                LiveAgentSession(
-                    id: id,
-                    agent: agent,
-                    processID: pid,
-                    workingDirectory: workingDirectory(of: pid)
-                )
+            let candidate = LiveAgentSession(
+                id: id,
+                agent: agent,
+                processID: pid,
+                workingDirectory: workingDirectory(of: pid)
             )
+            // A supervisor and its child can both hold the transcript open, and
+            // `proc_listpids` order is not meaningful, so keeping whichever
+            // arrived first picked an arbitrary process — and with it an
+            // arbitrary working directory. Resolve it deterministically
+            // instead.
+            candidates[id] = preferred(candidates[id], candidate)
         }
-        return sessions
+        return candidates.values.sorted { $0.processID < $1.processID }
+    }
+
+    /// Chooses between two processes holding the same session transcript.
+    ///
+    /// A known working directory beats an unknown one, because that string is
+    /// the session's label and its foreground match. Otherwise the higher PID
+    /// wins: in a supervisor/child pair the child is spawned later, and the
+    /// child is the process actually running the conversation.
+    static func preferred(_ existing: LiveAgentSession?, _ candidate: LiveAgentSession) -> LiveAgentSession {
+        guard let existing else { return candidate }
+        switch (existing.workingDirectory, candidate.workingDirectory) {
+        case (nil, .some): return candidate
+        case (.some, nil): return existing
+        default: return candidate.processID > existing.processID ? candidate : existing
+        }
     }
 
     /// Recovers the session identifier from the files a process holds open.

@@ -113,4 +113,46 @@ final class SessionRoutingTests: XCTestCase {
         guard case .resolved(let snapshot, _) = resolution else { return XCTFail("expected a resolved target") }
         XCTAssertEqual(snapshot.target.id, "pinned")
     }
+
+    /// The exact shape the app used to get wrong.
+    ///
+    /// `AppController` passed the user's chosen target as `pinnedDefault` — the
+    /// lowest-priority rule — and never populated `explicitTarget`. Any agent
+    /// with a question outranked the deliberate pick, so the utterance went
+    /// somewhere the user had not selected. A choice must arrive as
+    /// `explicitTarget`, and it must win.
+    func testAChosenTargetBeatsAWaitingRequestAndTheConfiguredDefault() {
+        let chosen = makeTarget("chosen")
+        let resolution = ContextResolver.resolve(
+            explicitTarget: chosen,
+            attention: [
+                .init(request: .init(kind: .question, title: "Which branch?"), target: makeTarget("noisy"), adapterBacked: true)
+            ],
+            sessions: [
+                .init(target: makeTarget("foreground"), status: .ready, lastActiveAt: now, expiresAt: now.addingTimeInterval(30))
+            ],
+            foregroundTargetIDs: ["foreground"],
+            pinnedDefault: makeTarget("configured-default"),
+            now: now
+        )
+        guard case .resolved(let snapshot, let reason) = resolution else { return XCTFail("expected a resolved target") }
+        XCTAssertEqual(snapshot.target.id, "chosen")
+        XCTAssertEqual(reason, .explicit)
+    }
+
+    /// Passing the same target as `pinnedDefault` instead — the old behaviour —
+    /// demonstrably loses to a pending request.
+    func testPassingAChoiceAsThePinnedDefaultLosesToAPendingRequest() {
+        let resolution = ContextResolver.resolve(
+            attention: [
+                .init(request: .init(kind: .question, title: "Which branch?"), target: makeTarget("noisy"), adapterBacked: true)
+            ],
+            sessions: [],
+            pinnedDefault: makeTarget("chosen"),
+            now: now
+        )
+        guard case .resolved(let snapshot, let reason) = resolution else { return XCTFail("expected a resolved target") }
+        XCTAssertEqual(snapshot.target.id, "noisy", "this is the regression the explicit path exists to prevent")
+        XCTAssertEqual(reason, .pendingRequest)
+    }
 }

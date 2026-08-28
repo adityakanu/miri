@@ -116,6 +116,14 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var sessionPresence: [String: SessionPresence] = [:]
     private var siblingWatchTask: Task<Void, Never>?
     private var liveSessionWatchTask: Task<Void, Never>?
+    /// True when the user picked the active target themselves, rather than it
+    /// being inherited from the configured default.
+    ///
+    /// A deliberate choice must outrank every automatic rule. Without this
+    /// distinction the selection was passed to `ContextResolver` as
+    /// `pinnedDefault` — its *lowest* priority — so any agent with a pending
+    /// question silently stole an utterance the user had aimed elsewhere.
+    private var activeTargetWasChosenByUser = false
 
     override init() {
         // Different copies of the same bundle can otherwise run together (for
@@ -167,10 +175,20 @@ private final class AudioChunkPipe: @unchecked Sendable {
         // nothing changed so an idle Mac triggers no SwiftUI work.
         liveSessionWatchTask = Task { [weak self] in
             while !Task.isCancelled {
+                let scanned = LiveSessionScanner.scan()
+                let parents = ProcessAncestry.current()
                 await MainActor.run {
                     guard let self else { return }
-                    let scanned = LiveSessionScanner.scan()
-                    if scanned != self.liveSessions { self.liveSessions = scanned }
+                    self.processParents = parents
+                    if scanned != self.liveSessions {
+                        self.liveSessions = scanned
+                        // The scanner is the only component that knows what is
+                        // genuinely running. Its result reached the menu bar
+                        // and nothing else, so routing had no idea which agents
+                        // were alive. Feed it into presence, which is what
+                        // ContextResolver actually reads.
+                        self.noteLiveSessions(scanned)
+                    }
                 }
                 try? await Task.sleep(for: .seconds(4))
             }
@@ -215,6 +233,9 @@ private final class AudioChunkPipe: @unchecked Sendable {
         let enabledTargetIDs = Set(configuration.targets.filter(\.enabled).map(\.id))
         if activeTargetID == nil || !enabledTargetIDs.contains(activeTargetID!) || activeTargetID == previousDefault {
             activeTargetID = configuration.defaultTarget
+            // Inherited from configuration, not chosen: it must not outrank
+            // the resolver's automatic rules.
+            activeTargetWasChosenByUser = false
         }
         inputMode = MiriInputMode.supported(configurationValue: configuration.inputMode)
         if case .string(let value)? = configuration.sections["hotkeys"]?["active_target"] { activeHotkey = value }
@@ -370,7 +391,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
             let request = AgentInteractionRequest(kind: .question, title: spokenQuestion)
             attention.add(.init(request: request, target: target, adapterBacked: false))
             pendingAgentPrompt = spokenQuestion
+            // The agent claimed the selection; the user did not choose it, so
+            // it must not suppress a later explicit pick.
             activeTargetID = target.id
+            activeTargetWasChosenByUser = false
             lastStatus = "\(target.name) needs your answer. Hold \(activeHotkey) to reply."
         } else { lastStatus = "\(target.name) completed successfully" }
         logger.log("agent turn completed target=\(target.id) response_characters=\(response.count)")
@@ -428,6 +452,40 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
     }
 
+    /// Parent-process map captured alongside the live scan, so foreground
+    /// resolution does not have to re-read the process table on the hot path.
+    private var processParents: ProcessAncestry.ParentMap = [:]
+
+    /// Targets whose agent session runs inside the frontmost application.
+    ///
+    /// `ContextResolver` has always accepted this, but no caller ever supplied
+    /// it, so the resolver's foreground rule was unreachable. Ancestry is used
+    /// rather than window-title or path matching: if Terminal is frontmost and
+    /// `codex` was started from one of its tabs, that Codex process is a
+    /// descendant of Terminal. That is exact, not a guess.
+    func foregroundTargetIDs() -> Set<String> {
+        SessionCatalog.foregroundTargetIDs(
+            live: liveSessions,
+            targets: currentConfiguration.targets,
+            frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            parents: processParents
+        )
+    }
+
+    /// Every session the user can pick, live ones first.
+    ///
+    /// Settings previously read only `discoveredSessions`, which for Claude
+    /// Code is ranked by transcript file modification time — the exact
+    /// heuristic that cannot tell a finished conversation from a running one.
+    /// The scanner's answer is merged in here so both surfaces agree.
+    var sessionCatalog: [CatalogedSession] {
+        SessionCatalog.merge(
+            discovered: discoveredSessions,
+            live: liveSessions,
+            targets: currentConfiguration.targets
+        )
+    }
+
     /// Speaks to a live session, adopting it as a target the first time.
     func selectLiveSession(_ row: LiveSessionRow) {
         if let existing = row.existingTarget {
@@ -443,6 +501,15 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 lastActiveAt: Date()
             )
         )
+    }
+
+    /// Speaks to a cataloged session, adopting it as a target the first time.
+    func selectCatalogedSession(_ session: CatalogedSession) {
+        if let existing = session.existingTargetID {
+            selectTarget(existing)
+            return
+        }
+        addDiscoveredSession(session.summary)
     }
 
     /// Refreshes sessions for all three agents.
@@ -487,7 +554,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 notes[.hermes] = error.localizedDescription
             }
         } else {
-            notes[.hermes] = "Set a Hermes endpoint in config.toml to list its sessions."
+            notes[.hermes] = "Add `[hermes]` with `endpoint = \"http://127.0.0.1:8642\"` to config.toml to list its sessions."
         }
 
         discoveredSessions = found.sorted { $0.lastActiveAt > $1.lastActiveAt }
@@ -495,9 +562,18 @@ private final class AudioChunkPipe: @unchecked Sendable {
         logger.log("session discovery count=\(discoveredSessions.count)")
     }
 
-    /// The Hermes API-server URL, taken from an existing Hermes target.
+    /// The Hermes API-server URL.
+    ///
+    /// Previously this came only from an existing Hermes target, which made
+    /// discovery circular: you needed a target before Miri could find the
+    /// sessions you would build a target from. A `[hermes] endpoint` setting is
+    /// honoured first so the loop can be entered.
     private var hermesEndpoint: URL? {
-        currentConfiguration.targets
+        if case .string(let value)? = currentConfiguration.sections["hermes"]?["endpoint"],
+           let url = URL(string: value) {
+            return url
+        }
+        return currentConfiguration.targets
             .first { $0.adapter == "hermes" }?
             .endpoint
             .flatMap(URL.init(string:))
@@ -524,13 +600,39 @@ private final class AudioChunkPipe: @unchecked Sendable {
             endpoint: session.agent == .hermes ? hermesEndpoint?.absoluteString : nil
         )
         currentConfiguration.targets.append(target)
+        // Adopting a session is a deliberate pick.
         activeTargetID = id
+        activeTargetWasChosenByUser = true
         Task {
             do {
                 try await configurationStore.write(currentConfiguration)
                 lastStatus = "Added \(target.name)"
             } catch {
                 lastStatus = "Could not add the session: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Enables or disables a target.
+    ///
+    /// A disabled target is invisible to `TargetRegistry.target(id:)`, so
+    /// selecting one used to route the utterance to the configured default
+    /// without saying so. Settings now offers this rather than making the user
+    /// hand-edit config.toml to escape that dead end.
+    func setTargetEnabled(_ id: String, _ enabled: Bool) {
+        guard let index = currentConfiguration.targets.firstIndex(where: { $0.id == id }) else { return }
+        currentConfiguration.targets[index].enabled = enabled
+        targets = currentConfiguration.targets
+        if !enabled, activeTargetID == id {
+            activeTargetID = currentConfiguration.defaultTarget
+            activeTargetWasChosenByUser = false
+        }
+        Task {
+            do {
+                try await configurationStore.write(currentConfiguration)
+                lastStatus = enabled ? "Enabled target" : "Disabled target"
+            } catch {
+                lastStatus = "Could not update the target: \(error.localizedDescription)"
             }
         }
     }
@@ -542,7 +644,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         if currentConfiguration.defaultTarget == id {
             currentConfiguration.defaultTarget = currentConfiguration.targets.first?.id ?? ""
         }
-        if activeTargetID == id { activeTargetID = nil }
+        if activeTargetID == id { activeTargetID = nil; activeTargetWasChosenByUser = false }
         Task {
             do {
                 try await configurationStore.write(currentConfiguration)
@@ -599,6 +701,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         currentConfiguration.targets.append(target)
         currentConfiguration.defaultTarget = id
         activeTargetID = id
+        activeTargetWasChosenByUser = true
         Task {
             do {
                 try await configurationStore.write(currentConfiguration)
@@ -792,9 +895,18 @@ private final class AudioChunkPipe: @unchecked Sendable {
             } else {
                 let waiting = attention.pending()
                 let now = Date()
+                // A target the user picked is an explicit aim and must beat
+                // every automatic rule. Previously it was handed in as
+                // `pinnedDefault`, the lowest-priority rule, so a pending
+                // request from any other agent silently captured the utterance.
+                let explicit = activeTargetWasChosenByUser
+                    ? targets.first { $0.id == activeTargetID && $0.enabled }
+                    : nil
                 switch ContextResolver.resolve(
+                    explicitTarget: explicit,
                     attention: waiting,
                     sessions: Array(sessionPresence.values.filter { !$0.isExpired(at: now) }),
+                    foregroundTargetIDs: foregroundTargetIDs(),
                     pinnedDefault: routed.target,
                     now: now
                 ) {
@@ -1039,6 +1151,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
             attention.add(.init(request: interaction, target: target, adapterBacked: false))
             pendingAgentPrompt = request.text
             activeTargetID = target.id
+            activeTargetWasChosenByUser = false
             logger.log("agent question bound target=\(target.id)")
         }
         speechRequestedAt = .now
@@ -1162,11 +1275,46 @@ private final class AudioChunkPipe: @unchecked Sendable {
         recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil; hotkeys?.enableEscapeCancellation(false)
         state = machine.handle(.cancel); presentOverlay(.cancelled); dismissOverlay(after: 0.25)
     }
+    /// The user picked a target. Every user-facing selection funnels through
+    /// here so the deliberate choice is recorded, not just the ID.
     func selectTarget(_ id: String) {
         activeTargetID = id
+        activeTargetWasChosenByUser = true
         let name = targets.first(where: { $0.id == id })?.name ?? id
         let status = targetStatuses[id]?.rawValue ?? "starting"
         lastStatus = "Selected \(name) (\(status))"
+    }
+
+    /// Returns to automatic routing: "Use configured default" in Settings.
+    func clearTargetSelection() {
+        activeTargetID = currentConfiguration.defaultTarget
+        activeTargetWasChosenByUser = false
+        lastStatus = "Miri will choose the target automatically"
+    }
+
+    /// Two-way binding for the Settings target list, so selecting there records
+    /// the choice exactly as the menu bar does instead of writing the raw ID.
+    ///
+    /// `Binding`'s accessors are non-isolated while this controller is
+    /// `@MainActor`, so the hops are asserted rather than assumed silently:
+    /// SwiftUI drives both accessors from the main thread, and
+    /// `assumeIsolated` traps loudly if that ever stops being true instead of
+    /// corrupting state.
+    var activeTargetSelection: Binding<String?> {
+        Binding(
+            get: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.activeTargetWasChosenByUser else { return nil }
+                    return self.activeTargetID
+                }
+            },
+            set: { [weak self] id in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let id { self.selectTarget(id) } else { self.clearTargetSelection() }
+                }
+            }
+        )
     }
     func saveActiveHotkey() {
         do { _ = try KeyboardShortcut.parse(activeHotkey) }
@@ -1304,9 +1452,50 @@ private final class AudioChunkPipe: @unchecked Sendable {
         return AgentHUDModel(
             sessions: Array(sessionPresence.values.filter { !$0.isExpired(at: now) }),
             attention: attention,
+            foregroundTargetIDs: foregroundTargetIDs(),
             mutedTargetIDs: mutedTargetIDs,
             now: now
         )
+    }
+
+    /// Records presence for every agent process currently running.
+    ///
+    /// Presence used to be created only by an agent event or a delivery, so a
+    /// session the user had never spoken to was invisible to `ContextResolver`
+    /// even while it was plainly running — the foreground and recency rules had
+    /// nothing to match against. A process holding its transcript open *is*
+    /// evidence the session is alive, so it is recorded here.
+    ///
+    /// `lastUserInteractionAt` is deliberately left alone: being alive is not
+    /// the same as having been spoken to, and only the latter should make a
+    /// session win the recency rule.
+    private func noteLiveSessions(_ sessions: [LiveAgentSession]) {
+        let now = Date()
+        for session in sessions {
+            guard let target = currentConfiguration.targets.first(where: { $0.session == session.id }),
+                  target.enabled
+            else { continue }
+            let existing = sessionPresence[target.id]
+            sessionPresence[target.id] = SessionPresence(
+                target: target,
+                status: targetStatuses[target.id] ?? existing?.status ?? .ready,
+                lastActiveAt: now,
+                lastUserInteractionAt: existing?.lastUserInteractionAt,
+                expiresAt: now.addingTimeInterval(SessionPresence.liveWindow)
+            )
+        }
+        // A session whose process has exited is no longer live. Expire it now
+        // rather than leaving it routable for the remaining 15-minute window.
+        let running = Set(sessions.map(\.id))
+        for (id, presence) in sessionPresence {
+            guard let session = presence.target.session, !running.contains(session) else { continue }
+            // Only sessions the scanner can see at all: Hermes has no
+            // process-level identity, so absence there means nothing.
+            guard LiveSessionScanner.canDetectLiveness(presence.target.adapter) else { continue }
+            var expired = presence
+            expired.expiresAt = now
+            sessionPresence[id] = expired
+        }
     }
 
     /// Records that an agent did something. Only observed activity creates
@@ -1702,7 +1891,11 @@ private struct MiriOnboardingHost: View {
                     targets: controller.targets,
                 speechHealth: controller.speechHealth,
                 codexIntegrationStatus: controller.codexIntegrationStatus,
-                activeTargetID: $controller.activeTargetID,
+                // Bound through the controller so a pick in Settings records a
+                // deliberate choice, exactly as the menu bar does, instead of
+                // writing the raw ID and leaving routing unable to tell a
+                // chosen target from an inherited default.
+                activeTargetID: controller.activeTargetSelection,
                 sttBackend: $controller.sttBackend,
                 sttTestStatus: controller.sttTestStatus,
                 parakeetInstalled: controller.parakeetInstalled,
@@ -1710,7 +1903,7 @@ private struct MiriOnboardingHost: View {
                 isInstallingParakeet: controller.isInstallingParakeet,
                 hasCursorTarget: controller.hasCursorTarget,
                 accessibilityGranted: AccessibilityPermission.isGranted,
-                discoveredSessions: controller.discoveredSessions,
+                sessionCatalog: controller.sessionCatalog,
                 isRefreshingSessions: controller.isRefreshingSessions,
                 sessionDiscoveryNotes: controller.sessionDiscoveryNotes,
                 actions: .init(
@@ -1729,7 +1922,8 @@ private struct MiriOnboardingHost: View {
                     addCursorTarget: controller.addCursorTarget,
                     openAccessibilitySettings: controller.openAccessibilitySettings,
                     refreshSessions: { Task { await controller.refreshAllSessions() } },
-                    addSession: controller.addDiscoveredSession,
+                    selectSession: controller.selectCatalogedSession,
+                    setTargetEnabled: controller.setTargetEnabled,
                     removeTarget: controller.removeTarget
                 )
             )

@@ -50,6 +50,15 @@ adapter = "clipboard"
 # session = "thread-uuid"
 
 # Claude Code and Hermes adapters are experimental in 0.1.4.
+#
+# Hermes runs a single application process for all of its conversations, so
+# Miri cannot find its sessions in the process table the way it does for Codex
+# and Claude Code. Point it at the API server and Settings can list them — set
+# this *before* adding a Hermes target, since discovery is what you build the
+# target from.
+# [hermes]
+# endpoint = "http://127.0.0.1:8642"
+
 # [[targets]]
 # id = "hermes-project"
 # name = "Hermes – Project"

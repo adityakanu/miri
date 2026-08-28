@@ -17,7 +17,8 @@ struct MiriSettingsActions {
     var addCursorTarget: () -> Void = {}
     var openAccessibilitySettings: () -> Void = {}
     var refreshSessions: () -> Void = {}
-    var addSession: (AgentSessionSummary) -> Void = { _ in }
+    var selectSession: (CatalogedSession) -> Void = { _ in }
+    var setTargetEnabled: (String, Bool) -> Void = { _, _ in }
     var removeTarget: (String) -> Void = { _ in }
 }
 
@@ -36,7 +37,10 @@ struct MiriSettingsView: View {
     let isInstallingParakeet: Bool
     let hasCursorTarget: Bool
     let accessibilityGranted: Bool
-    let discoveredSessions: [AgentSessionSummary]
+    /// Live and discovered sessions merged, running ones first. Settings used
+    /// to read raw discovery, which for Claude Code is ranked by transcript
+    /// mtime and so could bury a session that is running right now.
+    let sessionCatalog: [CatalogedSession]
     let isRefreshingSessions: Bool
     let sessionDiscoveryNotes: [AgentSessionSummary.Agent: String]
     var configurationError: String?
@@ -96,6 +100,10 @@ struct MiriSettingsView: View {
         }
     }
 
+    /// How many sessions one pane lists before truncating. The count is shown
+    /// alongside so a truncated list never looks like a complete one.
+    static let maximumListedSessions = 12
+
     @AppStorage("settings.selectedPane") private var selectedPaneRaw = Pane.general.rawValue
 
     private var selection: Pane {
@@ -148,12 +156,19 @@ struct MiriSettingsView: View {
                 Label(pane.title, systemImage: pane.symbol)
                 Spacer()
                 if let agent = pane.agent {
-                    let count = discoveredSessions.filter { $0.agent == agent }.count
-                    if count > 0 {
-                        Text("\(count)")
+                    let agentSessions = sessionCatalog.filter { $0.agent == agent }
+                    let running = agentSessions.filter(\.isRunningNow).count
+                    if !agentSessions.isEmpty {
+                        // A running count is the useful one; the total is
+                        // mostly history. Show both only when they differ.
+                        Text(running > 0 ? "\(running)/\(agentSessions.count)" : "\(agentSessions.count)")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel("\(count) sessions")
+                            .foregroundStyle(running > 0 ? Color.green : Color.secondary)
+                            .accessibilityLabel(
+                                running > 0
+                                    ? "\(running) of \(agentSessions.count) sessions running"
+                                    : "\(agentSessions.count) sessions"
+                            )
                     }
                 }
             }
@@ -284,10 +299,18 @@ struct MiriSettingsView: View {
     /// working menu picker with a list of rows whose radio circles were purely
     /// decorative, so the page appeared to offer two selectors and only one
     /// responded. There is now one control, and it is the list.
+    ///
+    /// `activeTargetID` is global while these panes are per-agent, so a pane
+    /// states plainly when the active target belongs to a *different* agent
+    /// rather than showing "Use configured default" as though nothing were
+    /// selected anywhere.
     @ViewBuilder private var agentPane: some View {
         if let agent = selection.agent {
             let agentTargets = targets.filter { $0.adapter == agent.rawValue }
-            let sessions = discoveredSessions.filter { $0.agent == agent }
+            let sessions = sessionCatalog.filter { $0.agent == agent }
+            let activeElsewhere = targets.first {
+                $0.id == activeTargetID && $0.adapter != agent.rawValue
+            }
 
             MiriPane(
                 title: agent.displayName,
@@ -299,6 +322,17 @@ struct MiriSettingsView: View {
                     title: "Targets",
                     subtitle: "Select the one that receives the next thing you say."
                 ) {
+                    if let activeElsewhere {
+                        MiriCard {
+                            Label(
+                                "\(activeElsewhere.name) is selected, under \(activeElsewhere.adapter.capitalized). Choosing here moves the selection to \(agent.displayName).",
+                                systemImage: "arrow.triangle.branch"
+                            )
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+
                     if agentTargets.isEmpty {
                         MiriCard {
                             Text("No \(agent.displayName) targets yet. Add one from the sessions below.")
@@ -311,21 +345,32 @@ struct MiriSettingsView: View {
                             title: "Use configured default",
                             subtitle: "Miri picks using the routing rules.",
                             isActive: activeTargetID == nil,
+                            isSelectable: true,
                             select: { activeTargetID = nil },
+                            enable: nil,
                             remove: nil
                         )
                         ForEach(agentTargets) { target in
                             SelectableTargetRow(
                                 title: target.name,
                                 subtitle: [
-                                    target.enabled ? nil : "Disabled",
+                                    // A disabled target cannot be routed to at
+                                    // all: TargetRegistry.target(id:) returns
+                                    // nil for it, so selecting one silently
+                                    // fell through to the configured default.
+                                    // Say so instead of offering it.
+                                    target.enabled ? nil : "Disabled — enable it to speak here",
+                                    sessions.first { $0.existingTargetID == target.id }?.isRunningNow == true
+                                        ? "Running now" : nil,
                                     target.hotkey,
                                     target.session.map { "Session \($0.prefix(8))" },
                                 ]
                                 .compactMap { $0 }
                                 .joined(separator: " · "),
                                 isActive: target.id == activeTargetID,
+                                isSelectable: target.enabled,
                                 select: { activeTargetID = target.id },
+                                enable: target.enabled ? nil : { actions.setTargetEnabled(target.id, true) },
                                 remove: { actions.removeTarget(target.id) }
                             )
                         }
@@ -334,7 +379,7 @@ struct MiriSettingsView: View {
 
                 MiriSection(
                     title: "Available sessions",
-                    subtitle: "Conversations Miri found for \(agent.displayName)."
+                    subtitle: "Conversations Miri found for \(agent.displayName). Running ones are listed first."
                 ) {
                     HStack {
                         Button { actions.refreshSessions() } label: {
@@ -345,6 +390,11 @@ struct MiriSettingsView: View {
                         }
                         .disabled(isRefreshingSessions)
                         Spacer()
+                        if sessions.count > Self.maximumListedSessions {
+                            Text("Showing \(Self.maximumListedSessions) of \(sessions.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     if sessions.isEmpty {
@@ -353,11 +403,10 @@ struct MiriSettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        ForEach(sessions.prefix(12)) { session in
+                        ForEach(sessions.prefix(Self.maximumListedSessions)) { session in
                             DiscoveredSessionRow(
                                 session: session,
-                                isAdded: targets.contains { $0.session == session.id },
-                                add: { actions.addSession(session) }
+                                select: { actions.selectSession(session) }
                             )
                         }
                     }
@@ -378,7 +427,7 @@ struct MiriSettingsView: View {
                 }
             }
             .onAppear {
-                if discoveredSessions.isEmpty { actions.refreshSessions() }
+                if sessionCatalog.isEmpty { actions.refreshSessions() }
             }
         }
     }
@@ -544,7 +593,7 @@ struct MiriOnboardingView: View {
                     Label("No targets configured yet", systemImage: "exclamationmark.circle")
                     Button("Open Configuration") { actions.openConfiguration() }.keyboardShortcut("e", modifiers: [.command])
                 } else {
-                    ForEach(targets) { TargetSummaryRow(target: $0, selected: false) }
+                    ForEach(targets) { TargetSummaryRow(target: $0) }
                 }
             }
         case .privacy:
@@ -633,7 +682,13 @@ private struct SelectableTargetRow: View {
     let title: String
     let subtitle: String
     let isActive: Bool
+    /// False for a disabled target. Routing refuses to use one, so offering it
+    /// as a choice made the utterance go somewhere the user did not pick.
+    let isSelectable: Bool
     let select: () -> Void
+    /// Offered instead of selection when the target is disabled, so the dead
+    /// end has a way out without hand-editing config.toml.
+    let enable: (() -> Void)?
     /// Nil for rows that are not removable, such as the default choice.
     let remove: (() -> Void)?
 
@@ -655,8 +710,16 @@ private struct SelectableTargetRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(!isSelectable)
+            .opacity(isSelectable ? 1 : 0.55)
             .accessibilityAddTraits(isActive ? [.isSelected] : [])
             .accessibilityLabel(subtitle.isEmpty ? title : "\(title), \(subtitle)")
+
+            if let enable {
+                Button("Enable") { enable() }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Enable \(title)")
+            }
 
             if let remove {
                 Button(role: .destructive, action: remove) {
@@ -680,46 +743,71 @@ private struct SelectableTargetRow: View {
 }
 
 /// A discovered conversation that can be adopted as a target.
+/// One conversation Miri found, with an honest answer to "is this running?".
+///
+/// The action is "Speak to this", not "Add": adding a target the user then has
+/// to go and select separately was two steps for one intent. Selecting a
+/// session adopts it as a target when needed and makes it active in one click.
 private struct DiscoveredSessionRow: View {
-    let session: AgentSessionSummary
-    let isAdded: Bool
-    let add: () -> Void
+    let session: CatalogedSession
+    let select: () -> Void
 
     var body: some View {
         MiriCard {
             HStack(spacing: 12) {
+                Image(systemName: session.isRunningNow ? "circle.fill" : "circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(session.isRunningNow ? Color.green : Color.secondary)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.title).lineLimit(1)
+                    Text(session.summary.title).lineLimit(1)
                     Text(
-                        [session.projectName, String(session.id.prefix(8))]
-                            .compactMap { $0 }
-                            .joined(separator: " · ")
+                        [
+                            session.isRunningNow ? "Running now" : nil,
+                            session.summary.projectName,
+                            String(session.id.prefix(8)),
+                        ]
+                        .compactMap { $0 }
+                        .joined(separator: " · ")
                     )
                     .font(.caption).foregroundStyle(.secondary)
+                    // A running Codex owns its thread's writer, so resuming it
+                    // fails. Warn here rather than after the user has spoken.
+                    if session.conflictsWithRunningProcess {
+                        Label(
+                            "Open in Codex — quit it before Miri can speak here",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
                 }
                 Spacer()
-                if isAdded {
-                    Label("Added", systemImage: "checkmark.circle.fill")
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("Already added")
-                } else {
-                    Button("Add") { add() }
-                }
+                Button(session.isAdded ? "Speak to This" : "Add and Select") { select() }
+                    .help(
+                        session.conflictsWithRunningProcess
+                            ? "This session is open in Codex, which holds the thread. Miri cannot resume it until that Codex quits."
+                            : "Route the next thing you say to this session"
+                    )
             }
         }
         .accessibilityElement(children: .contain)
+        .accessibilityLabel(session.accessibilityLabel)
     }
 }
 
+/// A read-only listing of a configured target, used during onboarding.
+///
+/// It deliberately draws no selection circle: nothing here is selectable, and
+/// an always-empty radio control is the decorative-selector mistake this pane
+/// set out to remove.
 private struct TargetSummaryRow: View {
     let target: TargetDefinition
-    let selected: Bool
 
     var body: some View {
         HStack {
-            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             VStack(alignment: .leading) {
                 Text(target.name)

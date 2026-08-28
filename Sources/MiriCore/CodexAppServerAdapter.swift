@@ -2,6 +2,9 @@ import Foundation
 
 public enum CodexAppServerError: Error, LocalizedError {
     case disconnected, unavailable(TargetStatus), invalidResponse, timedOut(String), rpc(Int, String), processExited(Int32, String)
+    /// The thread is open in Codex itself, which owns its writer.
+    case threadBusyElsewhere(String)
+
     public var errorDescription: String? {
         switch self {
         case .disconnected: "Codex app server is disconnected"
@@ -10,7 +13,29 @@ public enum CodexAppServerError: Error, LocalizedError {
         case .timedOut(let method): "Codex app server timed out during \(method)"
         case .rpc(let code, let message): "Codex app server error \(code): \(message)"
         case .processExited(let code, let detail): "Codex app server exited with status \(code): \(detail)"
+        case .threadBusyElsewhere:
+            """
+            That Codex session is open in Codex itself, which is holding the \
+            thread. Quit that Codex, or pick a different session, then try \
+            again.
+            """
         }
+    }
+
+    /// Recognises a writer conflict from the app server's own message.
+    ///
+    /// A thread found by `LiveSessionScanner` is running *because* a Codex
+    /// process holds it, so `thread/resume` on it always loses. Matching the
+    /// message turns an opaque RPC error into one sentence that says what to
+    /// do; the raw text is preserved so a wording change downgrades this to
+    /// the generic error rather than hiding it.
+    static func classify(_ error: Error, threadID: String) -> Error {
+        guard case .rpc(_, let message)? = error as? CodexAppServerError else { return error }
+        let lowered = message.lowercased()
+        guard lowered.contains("active writer") || lowered.contains("already has a writer")
+                || (lowered.contains("writer") && lowered.contains("lock"))
+        else { return error }
+        return CodexAppServerError.threadBusyElsewhere(threadID)
     }
 }
 
@@ -95,8 +120,14 @@ public actor CodexAppServerAdapter: AgentAdapter {
             if !opensThread {
                 threadID = nil
             } else if let configuredThreadID {
-                let result = try await request("thread/resume", params: ["threadId": configuredThreadID, "cwd": workingDirectory.path])
-                threadID = try extractThreadID(result)
+                do {
+                    let result = try await request("thread/resume", params: ["threadId": configuredThreadID, "cwd": workingDirectory.path])
+                    threadID = try extractThreadID(result)
+                } catch {
+                    // Resuming a thread Codex still owns fails with an opaque
+                    // writer error. Say what actually happened instead.
+                    throw CodexAppServerError.classify(error, threadID: configuredThreadID)
+                }
             } else {
                 let result = try await request("thread/start", params: ["cwd": workingDirectory.path, "approvalPolicy": "on-request"])
                 threadID = try extractThreadID(result)
