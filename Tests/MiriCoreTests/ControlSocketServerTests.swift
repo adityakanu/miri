@@ -106,11 +106,36 @@ final class ControlSocketServerTests: XCTestCase {
         XCTAssertEqual(VoiceReplyTimeout.clamped(120), 120)
     }
 
+    /// Per-socket SO_NOSIGPIPE (set in acceptLoop) was observed insufficient
+    /// on at least one CI runner: a client disconnect during
+    /// testDisconnectedClientDoesNotCrashTheServer still killed the process
+    /// with SIGPIPE even with that fix in place. The process-wide
+    /// `signal(SIGPIPE, SIG_IGN)` is the reliable fix; this proves it is
+    /// actually engaged by writing directly to a closed pipe with no socket
+    /// options involved at all — SO_NOSIGPIPE cannot rescue this write, only
+    /// the process-wide signal disposition can.
+    func testProcessWideSIGPIPEIsIgnored() throws {
+        _ = SIGPIPEProtection.ignoreOnce
+        var fds: [Int32] = [0, 0]
+        let created = fds.withUnsafeMutableBufferPointer { pipe($0.baseAddress) }
+        XCTAssertEqual(created, 0)
+        let readEnd = fds[0], writeEnd = fds[1]
+        close(readEnd) // No reader left: the next write must raise EPIPE.
+        var byte: UInt8 = 1
+        let result = write(writeEnd, &byte, 1)
+        close(writeEnd)
+        XCTAssertEqual(result, -1)
+        XCTAssertEqual(errno, EPIPE)
+    }
+
     /// A client that connects, sends a request, and disconnects before the
     /// (possibly slow) handler writes its response used to raise SIGPIPE on
     /// the accepted socket, whose default action kills the whole process.
-    /// Revert-to-RED: remove the SO_NOSIGPIPE call in acceptLoop() and this
-    /// hangs/crashes the test process instead of completing.
+    /// Revert-to-RED: remove SIGPIPEProtection.ignoreOnce from both
+    /// ControlSocketServer.start() and ControlClient.send() and this
+    /// crashes the test process with signal 13 instead of completing —
+    /// reproduced against a real CI runner where per-socket SO_NOSIGPIPE
+    /// alone was not sufficient.
     func testDisconnectedClientDoesNotCrashTheServer() async throws {
         let path = temporarySocketPath()
         let server = ControlSocketServer(path: path) { _ in

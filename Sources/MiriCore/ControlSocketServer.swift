@@ -1,5 +1,15 @@
 import Foundation
 
+/// Ignores SIGPIPE for the whole process, once. write(2) then reports EPIPE
+/// like any other error instead of the default action killing the process.
+/// Per-socket SO_NOSIGPIPE (still set below) only protects fds we remembered
+/// to touch and is timing-sensitive; a process-wide ignore is the standard,
+/// unconditional fix every socket-serving Unix process needs and covers every
+/// current and future write path, not just this one server's sockets.
+enum SIGPIPEProtection {
+    static let ignoreOnce: Void = { signal(SIGPIPE, SIG_IGN) }()
+}
+
 public final class ControlSocketServer: @unchecked Sendable {
     public typealias Handler = @Sendable (VoiceStatusRequest) async -> ControlResponse
     private let path: String
@@ -14,6 +24,7 @@ public final class ControlSocketServer: @unchecked Sendable {
     private var isRunning: Bool { lock.withLock { running } }
 
     public func start() throws {
+        _ = SIGPIPEProtection.ignoreOnce
         try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0); guard fd >= 0 else { throw POSIXError(.ENOTSOCK) }

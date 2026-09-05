@@ -110,6 +110,7 @@ public enum ControlClient {
         path: String = MiriPaths.socketPath,
         readTimeout: TimeInterval = defaultReadTimeout
     ) throws -> ControlResponse {
+        _ = SIGPIPEProtection.ignoreOnce
         let data = try JSONEncoder().encode(request) + Data([0x0A])
         let fd = socket(AF_UNIX, SOCK_STREAM, 0); guard fd >= 0 else { throw POSIXError(.ENOTSOCK) }
         defer { close(fd) }
