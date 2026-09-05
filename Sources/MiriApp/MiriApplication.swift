@@ -685,7 +685,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         guard let codex = findExecutable("codex") else { lastStatus = "Codex CLI not found"; return }
         guard let helper = mcpHelperURL() else { lastStatus = "Miri MCP helper is missing; reinstall Miri"; return }
         let alert = NSAlert(); alert.messageText = "Install Miri voice integration for Codex?"
-        alert.informativeText = "This registers Miri's local stdio MCP helper in ~/.codex/config.toml. It opens no network port. Existing Miri registration is replaced."
+        alert.informativeText = "This registers Miri's local stdio MCP helper in ~/.codex/config.toml and installs Miri's voice-interaction skill for Codex and Claude Code if present. It opens no network port. Existing Miri registration is replaced."
         alert.addButton(withTitle: "Install"); alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .informational; NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -698,10 +698,20 @@ private final class AudioChunkPipe: @unchecked Sendable {
             if let failure {
                 self?.codexIntegrationStatus = "Installation failed: \(failure)"
                 self?.lastStatus = "Codex integration failed: \(failure)"
-            } else {
-                self?.codexIntegrationStatus = "Miri MCP is registered with Codex"
-                self?.lastStatus = "Codex voice integration installed. Restart Codex to load it."
+                return
             }
+            // The MCP registration makes voice_status/voice_ask callable; the
+            // skill file is what teaches an agent when and how to use them.
+            // Best-effort and silent on failure — the MCP tools already work
+            // without it, and a missing skill file must not look like the
+            // whole integration failed.
+            let installedSkillFor = await Task.detached { () -> [AgentSessionSummary.Agent] in
+                (try? SkillInstaller.install(content: SkillInstaller.bundledSkillContent())) ?? []
+            }.value
+            self?.codexIntegrationStatus = "Miri MCP is registered with Codex"
+            self?.lastStatus = installedSkillFor.isEmpty
+                ? "Codex voice integration installed. Restart Codex to load it."
+                : "Codex voice integration installed for \(installedSkillFor.map(\.displayName).joined(separator: " and ")). Restart to load it."
         }
     }
 

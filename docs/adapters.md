@@ -78,7 +78,11 @@ able to say so.
 
 Agents driving this loop should follow `skills/miri-voice/SKILL.md`, which
 covers when to speak, how to phrase questions for speech, and how to handle a
-timed-out ask.
+timed-out ask. **Settings → Targets → Install or Repair Miri MCP** installs
+this file directly into `~/.codex/skills/miri-voice/SKILL.md` and, if present,
+`~/.claude/skills/miri-voice/SKILL.md` — no manual copying required. It only
+writes into an agent's skill directory when that agent has already been run on
+the Mac, so it never creates `~/.codex` or `~/.claude` from nothing.
 
 Miri-managed Codex app-server approval callbacks remain inside the adapter.
 Miri speaks a command/file/permission summary without reading command contents

@@ -42,6 +42,10 @@ install -m 0755 "$ROOT/.build/release/miri-mcp" "$APP/Contents/Helpers/miri-mcp"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/docs/model-licenses.md" "$APP/Contents/Resources/MODEL-LICENSES.md"
 cp "$ROOT/THIRD-PARTY-NOTICES.md" "$APP/Contents/Resources/THIRD-PARTY-NOTICES.md"
+# Bundled so "Install or Repair Miri MCP" can also install the agent-facing
+# voice skill (when/how to call voice_status/voice_ask) without depending on
+# the source checkout being present on the user's machine.
+cp "$ROOT/skills/miri-voice/SKILL.md" "$APP/Contents/Resources/miri-voice-SKILL.md"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 # Adding the CLI helpers invalidates Xcode's initial signature.

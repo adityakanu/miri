@@ -125,6 +125,9 @@ obvious secrets, logs, code, URLs, and private paths.
 
 Agents should follow `skills/miri-voice/SKILL.md` for when to speak, how to
 phrase questions for speech, and why an unanswered question is never approval.
+**Settings → Targets → Install or Repair Miri MCP** installs this skill file
+directly into Codex's and Claude Code's real skill directories, so any agent
+you've already set up on this Mac picks it up automatically.
 
 ## Configure targets and speech
 
