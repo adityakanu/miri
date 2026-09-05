@@ -241,6 +241,7 @@ The formal gates are in [docs/release-checklist.md](docs/release-checklist.md).
 - [Model and runtime licenses](docs/model-licenses.md)
 - [Benchmark protocol](docs/benchmarks.md)
 - [Competitive landscape](docs/competitive-landscape.md)
+- [Launch kit for blog/PH/Twitter/video materials](docs/launch-kit.md)
 
 ## Acknowledgments
 
