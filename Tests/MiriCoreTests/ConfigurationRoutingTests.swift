@@ -92,4 +92,24 @@ final class ConfigurationRoutingTests: XCTestCase {
         let receipt = try await adapter.sendUserMessage("literal transcript\n")
         XCTAssertEqual(receipt.disposition, .delivered)
     }
+
+    /// An explicit target passed to ContextResolver must win over a pending
+    /// request bound to a *different* target — it must not win blindly over
+    /// everything, or "approve request" for the agent you just picked would
+    /// break. This exercises the exact call the app makes after selectTarget().
+    func testExplicitSelectionOutranksRecencyButNotItsOwnPendingRequest() {
+        let chosen = TargetDefinition(id: "chosen", name: "Chosen", adapter: "codex")
+        let recent = TargetDefinition(id: "recent", name: "Recent", adapter: "codex")
+        let now = Date(timeIntervalSince1970: 2_000)
+        let session = SessionPresence(target: recent, status: .ready, lastActiveAt: now, lastUserInteractionAt: now, expiresAt: now.addingTimeInterval(900))
+        let resolution = ContextResolver.resolve(
+            explicitTarget: chosen,
+            attention: [],
+            sessions: [session],
+            now: now
+        )
+        guard case .resolved(let snapshot, let reason) = resolution else { return XCTFail("expected a resolved target") }
+        XCTAssertEqual(snapshot.target.id, chosen.id)
+        XCTAssertEqual(reason, .explicit)
+    }
 }

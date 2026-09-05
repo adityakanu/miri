@@ -53,13 +53,22 @@ public final class ControlSocketServer: @unchecked Sendable {
             // every later request; the loop is the only acceptor.
             var timeout = timeval(tv_sec: 5, tv_usec: 0)
             setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            // A client that disconnects before the handler writes its
+            // response raises SIGPIPE on write(2), whose default action
+            // terminates the process. SO_NOSIGPIPE turns that into a normal
+            // EPIPE return, which the guarded writes below already handle.
+            var noSigPipe: Int32 = 1
+            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
             guard let request = Self.readRequest(client) else { close(client); continue }
             let handler = handler
             Task {
                 let response = await handler(request)
                 if let encoded = try? JSONEncoder().encode(response) {
-                    _ = encoded.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
-                    var newline: UInt8 = 0x0A; _ = write(client, &newline, 1)
+                    let wrote = encoded.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+                    if wrote == encoded.count {
+                        var newline: UInt8 = 0x0A
+                        _ = write(client, &newline, 1)
+                    }
                 }
                 close(client)
             }

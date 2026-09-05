@@ -86,6 +86,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var router = TargetRouter(registry: .init(targets: []))
     private var currentConfiguration = MiriConfiguration()
     private var recordingSnapshot: RecordingTargetSnapshot?
+    /// Set by selectTarget() to make the very next utterance an explicit
+    /// choice, so ContextResolver's recency/pending-request fallbacks cannot
+    /// silently override a menu pick. Consumed once in beginListening().
+    private var explicitSelectionPending = false
     /// The exact request this utterance answers, captured when recording began.
     private var recordingRequestID: String?
     private var recordingSessionID: String?
@@ -116,6 +120,19 @@ private final class AudioChunkPipe: @unchecked Sendable {
     private var sessionPresence: [String: SessionPresence] = [:]
     private var siblingWatchTask: Task<Void, Never>?
     private var liveSessionWatchTask: Task<Void, Never>?
+
+    /// Agents parked on `awaitReply`, keyed by the attention request they are
+    /// waiting on. Holding the socket open is what lets an agent ask mid-turn
+    /// and resume with its context intact instead of ending its turn and being
+    /// restarted cold by the answer.
+    private var replyWaiters: [String: CheckedContinuation<String?, Never>] = [:]
+    private var replyTimeoutTasks: [String: Task<Void, Never>] = [:]
+
+    /// How long Miri waits after the last sign of life before force-completing
+    /// a turn whose completion event never arrived. Generous because the
+    /// interesting case is a long autonomous task: a build, a test suite, or a
+    /// model call can easily be quiet for minutes while still progressing.
+    private static let agentCompletionGrace: TimeInterval = 300
 
     override init() {
         // Different copies of the same bundle can otherwise run together (for
@@ -298,6 +315,12 @@ private final class AudioChunkPipe: @unchecked Sendable {
 
     private func handleAgentEvent(_ event: AgentEvent, target: TargetDefinition) {
         noteAgentActivity(target)
+        // Any event proves the agent is alive, so it postpones the
+        // force-completion deadline. Only deltas used to, which meant a long
+        // silent tool run looked like a stalled turn.
+        if responseBuffers[target.id]?.isEmpty == false || finalResponses[target.id]?.isEmpty == false {
+            scheduleAgentCompletionFallback(for: target)
+        }
         switch event {
         case .status(let status):
             targetStatuses[target.id] = status
@@ -305,6 +328,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
             // answer; leaving its requests pending would let a later utterance
             // approve something nothing is listening for.
             if status == .disconnected || status == .failed {
+                failReplyWaiters(targetID: target.id)
                 attention.removeAll(targetID: target.id)
                 pendingAgentPrompt = attention.pending().first?.request.title
             }
@@ -334,6 +358,7 @@ private final class AudioChunkPipe: @unchecked Sendable {
         case .failed(let message):
             agentCompletionTimeoutTasks.removeValue(forKey: target.id)?.cancel()
             responseBuffers.removeValue(forKey: target.id); finalResponses.removeValue(forKey: target.id)
+            failReplyWaiters(targetID: target.id)
             attention.removeAll(targetID: target.id)
             pendingAgentPrompt = attention.pending().first?.request.title
             targetStatuses[target.id] = .failed
@@ -343,7 +368,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
     }
 
-    private func scheduleAgentCompletionFallback(for target: TargetDefinition, delay: TimeInterval = 30) {
+    /// Force-completes a turn whose completion event never arrived.
+    ///
+    /// The timer is rearmed by every agent event, not only response deltas: a
+    /// long task streams a sentence, then runs a five-minute build that emits
+    /// only tool events. Arming this once off the first delta would speak half
+    /// a sentence and mark the agent ready while it is still working.
+    private func scheduleAgentCompletionFallback(for target: TargetDefinition, delay: TimeInterval = AppController.agentCompletionGrace) {
         agentCompletionTimeoutTasks.removeValue(forKey: target.id)?.cancel()
         agentCompletionTimeoutTasks[target.id] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -553,6 +584,29 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
     }
 
+    /// Sets or clears a target's dedicated hotkey, so different destinations
+    /// (an agent, the dictation target) can each have their own shortcut
+    /// instead of sharing the single default one. Empty clears it. Validated
+    /// against the same parser the default hotkey uses, and re-registered
+    /// immediately so it takes effect without a restart.
+    func setHotkey(targetID: String, hotkey: String) {
+        let trimmed = hotkey.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            do { _ = try KeyboardShortcut.parse(trimmed) }
+            catch { lastStatus = error.localizedDescription; return }
+        }
+        guard let index = currentConfiguration.targets.firstIndex(where: { $0.id == targetID }) else { return }
+        currentConfiguration.targets[index].hotkey = trimmed.isEmpty ? nil : trimmed.lowercased()
+        Task {
+            do {
+                try await configurationStore.write(currentConfiguration)
+                lastStatus = trimmed.isEmpty ? "Hotkey cleared" : "Hotkey saved: \(trimmed.lowercased())"
+            } catch {
+                lastStatus = "Could not save hotkey: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func refreshCodexThreads() async {
         guard !isRefreshingCodexThreads else { return }
         guard let executable = findExecutable("codex") else {
@@ -672,11 +726,17 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
     }
 
+    /// Identifier for the default hotkey. Distinct from dedicated per-target
+    /// hotkeys (identifiers >= 100, see below) so a press of the default
+    /// shortcut is never mistaken for an explicit dedicated aim: only a
+    /// dedicated hotkey may bypass pending-request/approval routing.
+    private static let defaultHotkeyIdentifier: UInt32 = 1
+
     private func configureHotkeys(for enabledTargets: [TargetDefinition]) {
         hotkeys?.unregisterAll(); hotkeyNames.removeAll()
         do {
-            try hotkeys?.register(KeyboardShortcut.parse(activeHotkey), identifier: 1)
-            hotkeyNames[1] = activeHotkey
+            try hotkeys?.register(KeyboardShortcut.parse(activeHotkey), identifier: Self.defaultHotkeyIdentifier)
+            hotkeyNames[Self.defaultHotkeyIdentifier] = activeHotkey
         } catch {
             lastStatus = "Active hotkey unavailable: \(error.localizedDescription)"
             logger.log(.error, lastStatus)
@@ -706,8 +766,13 @@ private final class AudioChunkPipe: @unchecked Sendable {
             guard !hotkeyIsHeld else { return }
             hotkeyIsHeld = true; hotkeyPressedAt = .now
             let attempt = UUID(); listeningAttemptID = attempt
+            // Only a genuinely dedicated per-target hotkey should bypass
+            // pending-request/approval routing (see beginListening). The
+            // default shortcut must fall through to ContextResolver like any
+            // other press.
+            let dedicated = identifier == Self.defaultHotkeyIdentifier ? nil : hotkeyNames[identifier]
             Task {
-            await beginListening(dedicatedHotkey: hotkeyNames[identifier], attemptID: attempt)
+            await beginListening(dedicatedHotkey: dedicated, attemptID: attempt)
             }
         case .released:
             // A tap too short to open the microphone never reaches .listening,
@@ -792,7 +857,14 @@ private final class AudioChunkPipe: @unchecked Sendable {
             } else {
                 let waiting = attention.pending()
                 let now = Date()
+                // A menu selection is a deliberate choice and must not be
+                // silently overridden by recency or a pending request on a
+                // different target. Consumed once so routing returns to the
+                // normal rules on the following utterance.
+                let explicitChoice = explicitSelectionPending ? routed.target : nil
+                explicitSelectionPending = false
                 switch ContextResolver.resolve(
+                    explicitTarget: explicitChoice,
                     attention: waiting,
                     sessions: Array(sessionPresence.values.filter { !$0.isExpired(at: now) }),
                     pinnedDefault: routed.target,
@@ -801,8 +873,16 @@ private final class AudioChunkPipe: @unchecked Sendable {
                 case .resolved(let resolved, let reason):
                     recordingSnapshot = reason == .pinnedDefault ? routed : resolved
                     // Bind the utterance to the exact request it answers, so a
-                    // delayed transcript cannot approve a different one.
-                    recordingRequestID = reason == .pendingRequest ? waiting.first?.id : nil
+                    // delayed transcript cannot approve a different one. An
+                    // explicit selection still binds when the chosen target
+                    // itself has exactly one pending request, so "approve
+                    // request" keeps working after picking an agent by hand.
+                    if reason == .pendingRequest {
+                        recordingRequestID = waiting.first?.id
+                    } else {
+                        let onChosenTarget = waiting.filter { $0.target.id == resolved.target.id }
+                        recordingRequestID = onChosenTarget.count == 1 ? onChosenTarget[0].id : nil
+                    }
                     // RoutingReason exists so an automatic choice is never
                     // mysterious; log it rather than discarding it.
                     logger.log("routing target=\(recordingSnapshot?.target.id ?? "none") reason=\(reason.rawValue)")
@@ -913,6 +993,24 @@ private final class AudioChunkPipe: @unchecked Sendable {
             state = machine.handle(.delivered)
             return
         }
+        // An agent parked on `voice_ask` is still inside its own turn, holding
+        // all the context that produced the question. Handing the answer back
+        // through its open socket resumes it mid-thought; sending a new turn
+        // instead would make it start cold and re-derive everything.
+        if let requestID = recordingRequestID, replyWaiters[requestID] != nil {
+            let written = TranscriptFormatter.written(text)
+            noteAgentActivity(snapshot.target, spokenToByUser: true)
+            resumeReplyWaiter(requestID: requestID, with: written)
+            attention.remove(id: requestID)
+            pendingAgentPrompt = attention.pending().first?.request.title
+            lastStatus = "Answered \(snapshot.target.name)"
+            logger.log("voice reply resumed waiting agent target=\(snapshot.target.id)")
+            presentOverlay(.delivered(target: snapshot.target.name))
+            transitionOverlay(to: .waiting(target: snapshot.target.name), after: 0.65)
+            recordingSessionID = nil; recordingSnapshot = nil; recordingRequestID = nil
+            state = machine.handle(.delivered)
+            return
+        }
         let sendingLabel = showTranscriptPreview ? "\(snapshot.target.name) · \(String(text.prefix(80)))" : snapshot.target.name
         presentOverlay(.sending(target: sendingLabel))
         // Spoken form is wrong for dictating into code: "port eight thousand
@@ -973,8 +1071,49 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
 
     private func clearQuestionIfNeeded(for targetID: String) {
+        // Collect before mutating: an agent parked on one of these questions
+        // must be released, or it sits on a dead socket until its own timeout.
+        let abandoned = attention.pending()
+            .filter { $0.target.id == targetID && $0.request.kind == .question }
+            .map(\.id)
         attention.removeQuestions(targetID: targetID)
+        for requestID in abandoned { resumeReplyWaiter(requestID: requestID, with: nil) }
         pendingAgentPrompt = attention.pending().first?.request.title
+    }
+
+    /// Parks the calling agent until the user answers this request, or until
+    /// the timeout elapses. Returns `nil` when no answer arrived, so silence
+    /// is never mistaken for consent.
+    private func awaitUserReply(requestID: String, timeout: TimeInterval) async -> String? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            // A second wait on the same request would strand the first
+            // continuation forever; release it rather than overwrite it.
+            replyWaiters.removeValue(forKey: requestID)?.resume(returning: nil)
+            replyTimeoutTasks.removeValue(forKey: requestID)?.cancel()
+            replyWaiters[requestID] = continuation
+            replyTimeoutTasks[requestID] = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.resumeReplyWaiter(requestID: requestID, with: nil) }
+            }
+        }
+    }
+
+    /// Releases a parked agent exactly once. Safe to call for requests nobody
+    /// is waiting on, which is what makes it usable from every teardown path.
+    private func resumeReplyWaiter(requestID: String, with reply: String?) {
+        replyTimeoutTasks.removeValue(forKey: requestID)?.cancel()
+        replyWaiters.removeValue(forKey: requestID)?.resume(returning: reply)
+    }
+
+    /// Releases every agent parked on a target that has gone away. Without
+    /// this a failed or disconnected agent's request is dropped from the queue
+    /// while its socket stays parked until the timeout.
+    private func failReplyWaiters(targetID: String) {
+        let abandoned = replyWaiters.keys.filter { requestID in
+            attention.item(requestID: requestID)?.target.id == targetID
+        }
+        for requestID in abandoned { resumeReplyWaiter(requestID: requestID, with: nil) }
     }
 
     private func resolveApprovalTranscript(_ transcript: String, pending: AttentionItem) async {
@@ -1028,35 +1167,87 @@ private final class AudioChunkPipe: @unchecked Sendable {
         // path `miri-mcp` uses, and without a target ID per-agent mute has
         // nothing to match against.
         let resolved = resolveStatusTarget(request)
-        // Return before the interruption logic below, so a muted agent cannot
-        // stop another agent's speech on its way to being silenced.
-        if let id = resolved?.id, mutedTargetIDs.contains(id) {
-            logger.log("agent speech skipped: target muted")
-            return .init(accepted: false, message: "\(resolved?.name ?? "That agent") is muted")
-        }
-        if request.kind == .question, let target = resolved {
+        // A ping is proof of life. Without this an agent working for half an
+        // hour and reporting progress every ten minutes still ages out of
+        // presence, disappearing from the HUD and from the routing candidates
+        // that would send the user's reply back to it.
+        if let target = resolved { noteAgentActivity(target) }
+        // A blocker is a question by another name: the agent has stopped and
+        // cannot continue without the user. Binding both kinds is what lets
+        // the reply route back to the waiting session instead of falling
+        // through to whichever agent happens to be most recent.
+        var boundRequestID: String?
+        if request.kind == .question || request.kind == .blocker, let target = resolved {
             let interaction = AgentInteractionRequest(kind: .question, title: request.text)
             attention.add(.init(request: interaction, target: target, adapterBacked: false))
+            boundRequestID = interaction.id
             pendingAgentPrompt = request.text
             activeTargetID = target.id
-            logger.log("agent question bound target=\(target.id)")
+            logger.log("agent \(request.kind?.rawValue ?? "question") bound target=\(target.id)")
+        }
+        // An agent may only park on a request the user can actually answer.
+        // Waiting without one would block until the timeout with no way for
+        // any utterance to reach it.
+        let waitsForReply = request.awaitReply == true && boundRequestID != nil
+        let replyTimeout = VoiceReplyTimeout.clamped(request.replyTimeoutSeconds)
+
+        func waitOrReturn(_ response: ControlResponse) async -> ControlResponse {
+            guard waitsForReply, let requestID = boundRequestID else { return response }
+            logger.log("agent waiting for voice reply target=\(resolved?.id ?? "none") timeout=\(Int(replyTimeout))s")
+            guard let reply = await awaitUserReply(requestID: requestID, timeout: replyTimeout) else {
+                // Silence is not consent. Say so plainly so the agent decides
+                // for itself rather than reading an empty answer as approval.
+                attention.remove(id: requestID)
+                pendingAgentPrompt = attention.pending().first?.request.title
+                logger.log("agent voice reply timed out target=\(resolved?.id ?? "none")")
+                return .init(accepted: false, message: "No answer from the user", reply: nil)
+            }
+            return .init(accepted: true, message: "User replied", reply: reply)
+        }
+
+        // Muting silences speech only. It must never hide that an agent is
+        // blocked, or a muted agent waits forever unnoticed — so this comes
+        // after the request is registered above, not before. A muted agent
+        // that asked to wait still waits: the question is answerable from the
+        // HUD, it simply is not read aloud.
+        if let id = resolved?.id, mutedTargetIDs.contains(id) {
+            logger.log("agent speech skipped: target muted")
+            return await waitOrReturn(.init(accepted: false, message: "\(resolved?.name ?? "That agent") is muted"))
         }
         speechRequestedAt = .now
+        // Never speak while the user is actively recording or a transcript is
+        // in flight: startSpeech's InteractionMachine transition is ignored
+        // by the machine (only idle/speaking accept it), speechFinished()
+        // then forces the state to idle out from under a live recording, and
+        // the mic is left running with nothing left to stop it. A voice
+        // status update that arrives mid-utterance must wait or fail, never
+        // preempt the hotkey session.
+        guard state == .idle || state == .speaking else {
+            return await waitOrReturn(.init(accepted: false, message: "Miri is mid-recording; try again after this utterance"))
+        }
+        // A question that loses the speech race is still a real question the
+        // user can answer from the HUD, so a waiting agent keeps waiting
+        // rather than being told to give up because something else spoke.
         if synthesizer.isSpeaking {
-            guard speechInterruptible && request.priority > speechPriority else { return .init(accepted: false, message: "A status of equal or higher priority is already speaking") }
+            guard speechInterruptible && request.priority > speechPriority else {
+                return await waitOrReturn(.init(accepted: false, message: "A status of equal or higher priority is already speaking"))
+            }
             synthesizer.stopSpeaking(at: .immediate)
         }
         if speechSessionID != nil {
-            guard speechInterruptible && request.priority > speechPriority else { return .init(accepted: false, message: "A status of equal or higher priority is already speaking") }
+            guard speechInterruptible && request.priority > speechPriority else {
+                return await waitOrReturn(.init(accepted: false, message: "A status of equal or higher priority is already speaking"))
+            }
             await synth.stop(); pcmPlayer?.stop()
         }
-        return await startSpeech(
+        let spoken = await startSpeech(
             request.text,
             target: resolved?.name ?? "Agent",
             targetID: resolved?.id,
             interruptible: request.interruptible,
             priority: request.priority
         )
+        return await waitOrReturn(spoken)
     }
 
     private func resolveStatusTarget(_ request: VoiceStatusRequest) -> TargetDefinition? {
@@ -1164,6 +1355,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     }
     func selectTarget(_ id: String) {
         activeTargetID = id
+        // Marks the very next utterance as an explicit choice, so
+        // ContextResolver honors it over recency/pending-request fallbacks.
+        // One-shot: after that utterance, routing returns to normal rules.
+        explicitSelectionPending = true
         let name = targets.first(where: { $0.id == id })?.name ?? id
         let status = targetStatuses[id]?.rawValue ?? "starting"
         lastStatus = "Selected \(name) (\(status))"
@@ -1529,6 +1724,10 @@ private final class AudioChunkPipe: @unchecked Sendable {
     func shutdown() {
         logger.log("application shutting down")
         agentCompletionTimeoutTasks.values.forEach { $0.cancel() }
+        // Release every parked agent before the socket closes, so a waiting
+        // turn gets a clean "no answer" instead of hanging until its own
+        // read timeout.
+        for requestID in Array(replyWaiters.keys) { resumeReplyWaiter(requestID: requestID, with: nil) }
         liveSessionWatchTask?.cancel()
         capture.stop(); hotkeys?.shutdown(); server?.stop()
         Task {
@@ -1538,6 +1737,11 @@ private final class AudioChunkPipe: @unchecked Sendable {
         }
     }
     private func speechFinished() {
+        // Defensive: this must only ever end a real speaking turn. If state
+        // isn't .speaking (e.g. it somehow fires while a hotkey recording is
+        // in flight), forcing .idle here would strand a live microphone with
+        // nothing left to stop it — see the guard in speak().
+        guard state == .speaking else { return }
         speechTimeoutTask?.cancel(); speechTimeoutTask = nil; speechSessionID = nil
         speechInterruptible = true; speechPriority = 0; state = machine.handle(.speechFinished)
         if let prompt = pendingAgentPrompt { presentOverlay(.needsInput(label: prompt)) }
@@ -1730,7 +1934,8 @@ private struct MiriOnboardingHost: View {
                     openAccessibilitySettings: controller.openAccessibilitySettings,
                     refreshSessions: { Task { await controller.refreshAllSessions() } },
                     addSession: controller.addDiscoveredSession,
-                    removeTarget: controller.removeTarget
+                    removeTarget: controller.removeTarget,
+                    setHotkey: controller.setHotkey
                 )
             )
             // Settings is a real window; give it a Dock icon and focus while it

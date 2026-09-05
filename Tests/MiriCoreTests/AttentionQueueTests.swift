@@ -46,12 +46,30 @@ final class AttentionQueueTests: XCTestCase {
         let request = AgentInteractionRequest(id: "approval", kind: .approval, title: "Run tests?", createdAt: now)
         queue.add(.init(request: request, target: target, adapterBacked: true))
 
-        let lifetime = AttentionItem.defaultLifetime
+        let lifetime = AttentionItem.approvalLifetime
         XCTAssertNotNil(queue.item(requestID: "approval", at: now.addingTimeInterval(lifetime - 1)))
         XCTAssertNil(
             queue.item(requestID: "approval", at: now.addingTimeInterval(lifetime)),
             "a request with no explicit expiry must not stay answerable forever"
         )
+    }
+
+    /// A long autonomous task is the whole point of the blocker flow: an agent
+    /// works for half an hour, then asks something. Expiring that question on
+    /// the approval timeout would silently re-route the user's reply to
+    /// whichever session happened to be recent instead.
+    func testQuestionsOutliveApprovals() {
+        var queue = AttentionQueue()
+        let now = Date(timeIntervalSince1970: 100)
+        let question = AgentInteractionRequest(id: "question", kind: .question, title: "Which database?", createdAt: now)
+        queue.add(.init(request: question, target: target, adapterBacked: false))
+
+        XCTAssertGreaterThan(AttentionItem.questionLifetime, AttentionItem.approvalLifetime)
+        XCTAssertNotNil(
+            queue.item(requestID: "question", at: now.addingTimeInterval(AttentionItem.approvalLifetime + 1)),
+            "a blocker raised by a long-running task must still be answerable after the approval timeout"
+        )
+        XCTAssertNil(queue.item(requestID: "question", at: now.addingTimeInterval(AttentionItem.questionLifetime)))
     }
 
     /// Disconnecting an agent must clear everything it was waiting on.

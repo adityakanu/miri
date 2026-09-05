@@ -116,9 +116,15 @@ Agents can request short status speech through the private local socket:
 miri status "Which option should I use?" --kind question --priority 1
 ```
 
-Or use `miri-mcp` and its `voice_status` MCP tool. Miri applies length limits,
-deduplication, rate limits, priority handling, and filters for obvious secrets,
-logs, code, URLs, and private paths.
+Or use `miri-mcp`, which exposes two tools. `voice_status` speaks and returns
+immediately, for progress and completion. `voice_ask` speaks a question and
+blocks until you answer by voice, returning your reply to the agent so it
+continues its current turn instead of ending it and starting over. Miri applies
+length limits, deduplication, rate limits, priority handling, and filters for
+obvious secrets, logs, code, URLs, and private paths.
+
+Agents should follow `skills/miri-voice/SKILL.md` for when to speak, how to
+phrase questions for speech, and why an unanswered question is never approval.
 
 ## Configure targets and speech
 

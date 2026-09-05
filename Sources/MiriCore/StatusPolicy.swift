@@ -26,8 +26,15 @@ public actor StatusPolicy {
                        "/Users/", "/var/", "Traceback (most recent call last)", "fatal error:"]
         guard !blocked.contains(where: { text.localizedCaseInsensitiveContains($0) }) else { throw StatusPolicyError.sensitive }
         let timestamp = now(); recent.removeAll { timestamp.timeIntervalSince($0.1) > 30 }
-        guard !recent.contains(where: { $0.0 == text && timestamp.timeIntervalSince($0.1) < 10 }) else { throw StatusPolicyError.duplicate }
-        guard recent.count < 6 else { throw StatusPolicyError.rateLimited }
+        // Duplicate and rate limits exist to stop chatty progress narration.
+        // They must not silence an agent that has stopped and is waiting on
+        // the user: asking "which one?" twice in a session is legitimate, and
+        // dropping it would leave the agent blocked with no way to say so.
+        let isBlocking = request.awaitReply == true
+        if !isBlocking {
+            guard !recent.contains(where: { $0.0 == text && timestamp.timeIntervalSince($0.1) < 10 }) else { throw StatusPolicyError.duplicate }
+            guard recent.count < 6 else { throw StatusPolicyError.rateLimited }
+        }
         recent.append((text, timestamp))
     }
 }

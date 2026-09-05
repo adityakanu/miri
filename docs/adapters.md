@@ -55,10 +55,30 @@ Codex. Miri registers the bundled stdio helper through `codex mcp add`; it does
 not edit the TOML itself and opens no network listener.
 
 `voice_status` accepts `kind = progress | completion | question | blocker |
-warning`. Questions carry the MCP process working directory. Miri resolves it
-to a configured target, selects that exact thread, and routes the next global
-hotkey transcript back there. Final Codex responses ending in a question mark
-receive the same treatment even when the MCP tool was not called.
+warning` and returns as soon as the text is spoken. Statuses carry the MCP
+process working directory. Miri resolves it to a configured target, selects
+that exact thread, and routes the next global hotkey transcript back there.
+Questions and blockers additionally register in the attention queue, so the
+user's reply returns to the agent that asked. Final Codex responses ending in a
+question mark receive the same treatment even when the MCP tool was not called.
+
+`voice_ask` speaks a question and **holds the connection open until the user
+answers by voice**, returning the transcript as the tool result. This is what
+lets an agent block mid-turn and resume with its context intact, instead of
+ending its turn and being restarted cold by the reply. The wait is bounded by
+`timeout_seconds` (default 600, maximum 1800). When no answer arrives the tool
+returns an error result reading "No answer from the user", which agents must
+treat as *undecided* rather than as approval.
+
+A parked request is released early — with no answer — if the agent fails or
+disconnects, if its question is superseded, or if Miri shuts down, so a waiting
+turn never hangs on a dead socket. Anti-chatter duplicate and rate limits are
+not applied to blocking asks: an agent that has genuinely stopped must always be
+able to say so.
+
+Agents driving this loop should follow `skills/miri-voice/SKILL.md`, which
+covers when to speak, how to phrase questions for speech, and how to handle a
+timed-out ask.
 
 Miri-managed Codex app-server approval callbacks remain inside the adapter.
 Miri speaks a command/file/permission summary without reading command contents

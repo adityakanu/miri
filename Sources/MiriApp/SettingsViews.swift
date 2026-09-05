@@ -19,6 +19,7 @@ struct MiriSettingsActions {
     var refreshSessions: () -> Void = {}
     var addSession: (AgentSessionSummary) -> Void = { _ in }
     var removeTarget: (String) -> Void = { _ in }
+    var setHotkey: (String, String) -> Void = { _, _ in }
 }
 
 struct MiriSettingsView: View {
@@ -97,6 +98,10 @@ struct MiriSettingsView: View {
     }
 
     @AppStorage("settings.selectedPane") private var selectedPaneRaw = Pane.general.rawValue
+    /// Draft hotkey text per target, so typing doesn't fight the configuration
+    /// round-trip until Save/Return commits it — mirrors how activeHotkey
+    /// already works as a separate @Binding from the persisted value.
+    @State private var hotkeyDrafts: [String: String] = [:]
 
     private var selection: Pane {
         get { Pane(rawValue: selectedPaneRaw) ?? .general }
@@ -319,14 +324,18 @@ struct MiriSettingsView: View {
                                 title: target.name,
                                 subtitle: [
                                     target.enabled ? nil : "Disabled",
-                                    target.hotkey,
                                     target.session.map { "Session \($0.prefix(8))" },
                                 ]
                                 .compactMap { $0 }
                                 .joined(separator: " · "),
                                 isActive: target.id == activeTargetID,
                                 select: { activeTargetID = target.id },
-                                remove: { actions.removeTarget(target.id) }
+                                remove: { actions.removeTarget(target.id) },
+                                hotkey: Binding(
+                                    get: { hotkeyDrafts[target.id] ?? target.hotkey ?? "" },
+                                    set: { hotkeyDrafts[target.id] = $0 }
+                                ),
+                                saveHotkey: { actions.setHotkey(target.id, hotkeyDrafts[target.id] ?? "") }
                             )
                         }
                     }
@@ -393,9 +402,30 @@ struct MiriSettingsView: View {
             MiriSection(title: "Target") {
                 MiriCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        if hasCursorTarget {
+                        if let cursorTarget = targets.first(where: { $0.adapter == "cursor" }) {
                             Label("Dictation target is configured.", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
+                            // A dedicated hotkey lets dictation and a coding
+                            // agent live on separate presses, so Miri is
+                            // usable for everyday typing without stealing the
+                            // shortcut you use to talk to an agent.
+                            LabeledContent("Shortcut") {
+                                TextField(
+                                    "e.g. option+d",
+                                    text: Binding(
+                                        get: { hotkeyDrafts[cursorTarget.id] ?? cursorTarget.hotkey ?? "" },
+                                        set: { hotkeyDrafts[cursorTarget.id] = $0 }
+                                    )
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                                .frame(width: 160)
+                                .lineLimit(1)
+                                .onSubmit { actions.setHotkey(cursorTarget.id, hotkeyDrafts[cursorTarget.id] ?? "") }
+                                .accessibilityHint("Bypasses automatic routing to dictate directly, separate from the agent shortcut")
+                            }
+                            Text("Leave blank to use the default shortcut for dictation too.")
+                                .font(.caption).foregroundStyle(.secondary)
                         } else {
                             Button("Add Dictation Target") { actions.addCursorTarget() }
                                 .buttonStyle(.borderedProminent)
@@ -636,6 +666,9 @@ private struct SelectableTargetRow: View {
     let select: () -> Void
     /// Nil for rows that are not removable, such as the default choice.
     let remove: (() -> Void)?
+    /// Nil for rows with no hotkey to edit, such as the default choice.
+    var hotkey: Binding<String>?
+    var saveHotkey: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -657,6 +690,22 @@ private struct SelectableTargetRow: View {
             .buttonStyle(.plain)
             .accessibilityAddTraits(isActive ? [.isSelected] : [])
             .accessibilityLabel(subtitle.isEmpty ? title : "\(title), \(subtitle)")
+
+            // A dedicated hotkey bypasses recency and pending-request routing
+            // to reach this exact target, so it needs its own field per
+            // target rather than sharing the single default shortcut —
+            // that is what lets, for example, the dictation target and a
+            // coding agent each have their own press.
+            if let hotkey {
+                TextField("Hotkey", text: hotkey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(width: 110)
+                    .lineLimit(1)
+                    .onSubmit { saveHotkey?() }
+                    .accessibilityLabel("Dedicated shortcut for \(title)")
+                    .accessibilityHint("Bypasses automatic routing to speak directly to this target")
+            }
 
             if let remove {
                 Button(role: .destructive, action: remove) {

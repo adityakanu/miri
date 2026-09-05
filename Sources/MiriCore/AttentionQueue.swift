@@ -7,10 +7,25 @@ public struct AttentionItem: Identifiable, Equatable, Sendable {
     public let adapterBacked: Bool
     public let expiresAt: Date?
 
-    /// How long a request stays answerable when the caller does not say.
+    /// How long an approval stays answerable when the caller does not say.
     /// An agent that blocks and then dies emits nothing, so without a default
-    /// its request waits forever and captures a much later utterance.
-    public static let defaultLifetime: TimeInterval = 300
+    /// its request waits forever and captures a much later utterance. Kept
+    /// short because an approval blocks a live RPC the agent is sitting on.
+    public static let approvalLifetime: TimeInterval = 300
+
+    /// How long a question or blocker stays answerable. Long tasks are the
+    /// point: an agent that works for half an hour and then asks something
+    /// must still be answerable when the user comes back to the desk. Expiring
+    /// it at the approval timeout silently re-routes that reply to whichever
+    /// session happens to be recent instead.
+    public static let questionLifetime: TimeInterval = 3_600
+
+    public static func defaultLifetime(for kind: AgentInteractionRequest.Kind) -> TimeInterval {
+        switch kind {
+        case .approval: approvalLifetime
+        case .question: questionLifetime
+        }
+    }
 
     public init(
         request: AgentInteractionRequest,
@@ -21,7 +36,8 @@ public struct AttentionItem: Identifiable, Equatable, Sendable {
         self.request = request
         self.target = target
         self.adapterBacked = adapterBacked
-        self.expiresAt = expiresAt ?? request.createdAt.addingTimeInterval(Self.defaultLifetime)
+        self.expiresAt = expiresAt
+            ?? request.createdAt.addingTimeInterval(Self.defaultLifetime(for: request.kind))
     }
 
     public func isExpired(at date: Date) -> Bool {

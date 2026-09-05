@@ -175,22 +175,48 @@ public actor CodexAppServerAdapter: AgentAdapter {
     }
     public func respond(to requestID: String, with response: AgentInteractionResponse) async throws {
         guard let pending = pendingInteractions.removeValue(forKey: requestID) else { throw AdapterError.unknownInteraction }
-        let decision: String
-        switch response {
-        case .approve: decision = "accept"
-        case .deny: decision = "decline"
-        case .text: throw AdapterError.unsupportedInteraction
+        guard case .text = response else {
+            do {
+                try respond(id: pending.rpcID, result: try Self.approvalResult(for: pending.method, response: response))
+            } catch {
+                // The decision never reached Codex. Put the request back so it is
+                // still answerable and the caller can report the failure: a deny
+                // that silently vanished must never look like a delivered deny.
+                pendingInteractions[requestID] = pending
+                throw error
+            }
+            return
         }
-        do {
-            try respond(id: pending.rpcID, result: ["decision": decision])
-        } catch {
-            // The decision never reached Codex. Put the request back so it is
-            // still answerable and the caller can report the failure: a deny
-            // that silently vanished must never look like a delivered deny.
-            pendingInteractions[requestID] = pending
-            throw error
+        throw AdapterError.unsupportedInteraction
+    }
+
+    /// Codex's app-server exposes five distinct approval RPC methods, each
+    /// with its own response schema — a bare `{"decision":"accept"}` is only
+    /// valid for two of them. Sending the wrong shape makes Codex reject the
+    /// response over the wire while Miri reported the decision as delivered.
+    ///
+    /// `item/permissions/requestApproval` cannot be answered by a plain
+    /// approve/deny at all: it requires a specific `GrantedPermissionProfile`
+    /// Miri has no basis to construct from a voice decision, so it throws
+    /// rather than sending a decision Codex would reject or, worse, a grant
+    /// Miri fabricated. `ApprovalOutcome` reports that as `.notDelivered` and
+    /// keeps the request pending — fail closed, matching every other write
+    /// failure on this path.
+    static func approvalResult(for method: String, response: AgentInteractionResponse) throws -> [String: Any] {
+        switch method {
+        case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+            return ["decision": response == .approve ? "accept" : "decline"]
+        case "applyPatchApproval", "execCommandApproval":
+            // Legacy ReviewDecision: approval is a bare string; denial is an
+            // object carrying an (optional) rejection reason.
+            return response == .approve
+                ? ["decision": "approved"]
+                : ["decision": ["denied": ["rejection": ""]]]
+        default:
+            throw AdapterError.unsupportedInteraction
         }
     }
+
     public nonisolated func events() -> AsyncStream<AgentEvent> { AsyncStream { continuation in Task { await self.add(continuation) } } }
 
     private func request(_ method: String, params: [String: Any]) async throws -> Data {
@@ -351,7 +377,8 @@ public actor CodexAppServerAdapter: AgentAdapter {
         // Best effort on teardown: if the pipe is already gone the requests die
         // with the process anyway, so a failed write here is not actionable.
         for pending in pendingInteractions.values {
-            try? respond(id: pending.rpcID, result: ["decision": "decline"])
+            guard let result = try? Self.approvalResult(for: pending.method, response: .deny) else { continue }
+            try? respond(id: pending.rpcID, result: result)
         }
         pendingInteractions.removeAll()
     }
